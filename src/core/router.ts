@@ -8,23 +8,27 @@ export class PipeRouter implements Router {
     private routes: Routes[] = []
 
     get(url: string, routeHandler: RouteHandler): void {
-        this.routes.push({ path: url, method: HTTP_METHODS.GET, handler: routeHandler })
+        this.register(url, HTTP_METHODS.GET, routeHandler);
     }
 
     post(url: string, routeHandler: RouteHandler): void {
-        this.routes.push({ path: url, method: HTTP_METHODS.POST, handler: routeHandler })
+        this.register(url, HTTP_METHODS.POST, routeHandler);
     }
 
     put(url: string, routeHandler: RouteHandler): void {
-        this.routes.push({ path: url, method: HTTP_METHODS.PUT, handler: routeHandler })
+        this.register(url, HTTP_METHODS.PUT, routeHandler);
     }
 
     delete(url: string, routeHandler: RouteHandler): void {
-        this.routes.push({ path: url, method: HTTP_METHODS.DELETE, handler: routeHandler })
+        this.register(url, HTTP_METHODS.DELETE, routeHandler);
     }
 
     patch(url: string, routeHandler: RouteHandler): void {
-        this.routes.push({ path: url, method: HTTP_METHODS.PATCH, handler: routeHandler })
+        this.register(url, HTTP_METHODS.PATCH, routeHandler);
+    }
+
+    private register(url: string, method: HTTP_METHODS, routeHandler: RouteHandler) {
+        this.routes.push({ path: url, method, handler: routeHandler })
     }
 
     match(method: string, path: string) {

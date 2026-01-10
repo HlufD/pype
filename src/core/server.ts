@@ -1,8 +1,6 @@
 import { createServer, IncomingMessage, Server, ServerResponse } from "node:http"
-
-import { PipeRouter } from "./router";
-import { Request } from "../types/request";
 import { Response } from "../types/response";
+import { PipeRouter } from "./router";
 export class PipeServer {
 
     private router: PipeRouter;

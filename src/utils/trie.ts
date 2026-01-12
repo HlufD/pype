@@ -57,19 +57,6 @@ class Trie {
     }
 }
 
-
-const trie = new Trie()
-//trie.insert("//users/profile", HTTP_METHODS.GET, () => { })
-trie.insert("//users/profile", HTTP_METHODS.GET, [() => { }, () => { }])
-trie.insert("//users/", HTTP_METHODS.GET, () => { })
-trie.insert("//users", HTTP_METHODS.POST, () => { })
-// trie.insert("/", HTTP_METHODS.GET, () => { })
-trie.insert("/users/:id/profile/:userId", HTTP_METHODS.GET, () => { })
-trie.insert("/users/:id/profile/:userId", HTTP_METHODS.POST, () => { })
-
-console.dir(trie, { depth: null })
-
-
 export {
     Trie,
     TrieNode

@@ -1,5 +1,5 @@
 import { IncomingMessage } from "node:http"
 
-interface Request {
-    raw: IncomingMessage
+class Request extends IncomingMessage {
+
 }

@@ -1,6 +1,5 @@
 import { ServerResponse } from "node:http"
 
 
-interface Response {
-    raw: ServerResponse
+class Response extends ServerResponse {
 }

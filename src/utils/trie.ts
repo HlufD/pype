@@ -10,6 +10,7 @@ class TrieNode {
     handlers: Map<HTTP_METHODS, RouteHandler[]> = new Map();
     staticChildren: Map<string, TrieNode> = new Map()
     dynamicChild: DynamicChild | null = null;
+    "*": TrieNode | null = null;
 }
 
 class Trie {
@@ -18,14 +19,25 @@ class Trie {
     public register(url: string, method: HTTP_METHODS, handlers: RouteHandler | RouteHandler[]) {
         const segments = this.normalizePath(url);
         let currNode = this.root as TrieNode
+        const hasOptionalParameter = this.hasOptionalParameter(url);
 
-        for (const segment of segments) {
-            currNode = this.isDynamicSegment(segment) ?
-                this.registerDynamicSegments(segment, currNode) :
-                this.registerStaticSegments(segment, currNode)
+        if (!this.hasOptionalParameter(url) && url.includes("?")) {
+            throw new Error(`Optional parameters should be placed at the end`)
         }
 
-        this.registerHandlers(method, handlers, currNode)
+        for (const segment of segments) {
+            if (this.isDynamicSegment(segment)) {
+                currNode = this.registerDynamicSegments(segment, currNode)
+            } else if (this.hasWildCard(segment)) {
+                currNode = this.registerWildCardSegment(segment, currNode)
+            } else {
+                currNode = this.registerStaticSegments(segment, currNode, handlers, hasOptionalParameter, method, segments)
+            }
+
+
+        }
+
+        this.registerHandlers(method, handlers, currNode, segments)
     }
 
     public match(url: string, method: HTTP_METHODS) {
@@ -37,6 +49,12 @@ class Trie {
             if (currNode.staticChildren.has(segment)) {
                 currNode = currNode.staticChildren.get(segment)!
                 continue;
+            }
+
+            if (currNode["*"]) {
+                params['*'] = url.slice(url.indexOf(segment));
+                currNode = currNode["*"]
+                break;
             }
 
             if (currNode.dynamicChild) {
@@ -55,12 +73,18 @@ class Trie {
     }
 
 
-    private registerStaticSegments(segment: string, currNode: TrieNode): TrieNode {
+    private registerStaticSegments(segment: string, currNode: TrieNode, handlers: RouteHandler | RouteHandler[], hasOptionalParameter: boolean, method: HTTP_METHODS, segments: string[]): TrieNode {
         if (!currNode.staticChildren.has(segment)) {
             currNode.staticChildren.set(segment, new TrieNode())
         }
 
-        return currNode.staticChildren.get(segment) as TrieNode;
+        currNode = currNode.staticChildren.get(segment) as TrieNode;
+
+        if (hasOptionalParameter) {
+            this.registerHandlers(method, handlers, currNode, segments)
+        }
+
+        return currNode
     }
 
     private registerDynamicSegments(segment: string, currNode: TrieNode): TrieNode {
@@ -80,13 +104,23 @@ class Trie {
         return currNode.dynamicChild.node
     }
 
-    private registerHandlers(method: HTTP_METHODS, handlers: RouteHandler | RouteHandler[], currNode: TrieNode) {
+    private registerHandlers(method: HTTP_METHODS, handlers: RouteHandler | RouteHandler[], currNode: TrieNode, segments: string[]) {
         handlers = Array.isArray(handlers) ? handlers : [handlers]
 
         const handlerStack = currNode.handlers.get(method) || []
-        handlers = handlerStack.length != 0 ? [...handlerStack, ...handlers] : handlers;
+
+        if (handlerStack.length) throw new Error(`Conflict error: /${segments.join("/")} route has already been registered.`)
 
         currNode.handlers.set(method, handlers)
+    }
+
+    private registerWildCardSegment(segment: string, currNode: TrieNode) {
+        if (!currNode["*"]) {
+            currNode["*"] = new TrieNode();
+        }
+
+        currNode = currNode["*"]
+        return currNode;
     }
 
     private normalizePath(path: string) {
@@ -94,36 +128,53 @@ class Trie {
     }
 
     private getParameterName(segment: string) {
-        return segment.slice(1)
+        const parameterName = this.hasOptionalParameter(segment) ?
+            segment.slice(1, segment.length - 1) :
+            segment.slice(1);
+
+        return parameterName;
     }
 
     private isDynamicSegment(segment: string): boolean {
         return segment.startsWith(":")
     }
 
+    private hasOptionalParameter(segment: string) {
+        return segment.endsWith("?")
+    }
+
+    private hasWildCard(segment: string) {
+        return segment.endsWith("*")
+    }
+
 }
 
 
 const trie = new Trie()
-trie.register("//users/profile", HTTP_METHODS.GET, () => { })
-trie.register("/users/profile", HTTP_METHODS.POST, [() => { }, () => { }])
+// trie.register("//users/profile", HTTP_METHODS.GET, () => { })
+// trie.register("/users/profile", HTTP_METHODS.POST, [() => { }, () => { }])
 // trie.register("//users/", HTTP_METHODS.GET, () => { })
 // trie.register("//users", HTTP_METHODS.GET, () => { })
 // trie.register("/", HTTP_METHODS.GET, () => { })
-trie.register("/users/:id/profile/:profileId", HTTP_METHODS.GET, () => { })
+//trie.register("/users/:id/profile/:profileId", HTTP_METHODS.GET, () => { })
 // trie.register("/users/:id/profile/:userId", HTTP_METHODS.POST, () => { })
 
 // trie.register("/users/:id", HTTP_METHODS.GET, () => { })
 // trie.register("/users/:id", HTTP_METHODS.POST, () => { })
 
-trie.register("/", HTTP_METHODS.GET, () => { })
+//trie.register("/users/:id", HTTP_METHODS.GET, () => { })
+//trie.register("/users/:userId?", HTTP_METHODS.GET, () => { })
+trie.register("/users/:id/*", HTTP_METHODS.GET, () => { })
+trie.register("/users/some_route/*", HTTP_METHODS.GET, () => { })
+
 
 console.dir(trie, { depth: null })
 
-console.log(trie.match("//users/profile", HTTP_METHODS.GET))
-// console.log(trie.match("//users", HTTP_METHODS.GET))
-// console.log(trie.match("//users", HTTP_METHODS.POST))
-console.log(trie.match("//users/12345/profile/6789", HTTP_METHODS.POST))
+// console.log(trie.match("//users/profile", HTTP_METHODS.GET))
+// // console.log(trie.match("//users", HTTP_METHODS.GET))
+// // console.log(trie.match("//users", HTTP_METHODS.POST))
+// console.log(trie.match("//users/12345/profile/6789", HTTP_METHODS.POST))
+console.log(trie.match("/users/some_route/profile/something", HTTP_METHODS.GET))
 
 // wild card
 // /user/:id/*

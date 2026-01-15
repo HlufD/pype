@@ -10,7 +10,7 @@ class TrieNode {
     handlers: Map<HTTP_METHODS, RouteHandler[]> = new Map();
     staticChildren: Map<string, TrieNode> = new Map()
     dynamicChild: DynamicChild | null = null;
-    wildCard: TrieNode | null = null;
+    "*": TrieNode | null = null;
 }
 
 class Trie {
@@ -51,6 +51,12 @@ class Trie {
                 continue;
             }
 
+            if (currNode["*"]) {
+                params['*'] = url.slice(url.indexOf(segment));
+                currNode = currNode["*"]
+                break;
+            }
+
             if (currNode.dynamicChild) {
                 params[currNode.dynamicChild.parameterName] = segment;
                 currNode = currNode.dynamicChild.node
@@ -61,12 +67,7 @@ class Trie {
         }
 
         const handlers = currNode.handlers?.get(method);
-        if (!handlers) {
-            if (currNode.wildCard) {
-                return { handlers: currNode.wildCard.handlers, params }
-            }
-            return null
-        }
+        if (!handlers) return null
 
         return { handlers, params }
     }
@@ -114,11 +115,11 @@ class Trie {
     }
 
     private registerWildCardSegment(segment: string, currNode: TrieNode) {
-        if (!currNode.wildCard) {
-            currNode.wildCard = new TrieNode();
+        if (!currNode["*"]) {
+            currNode["*"] = new TrieNode();
         }
 
-        currNode = currNode.wildCard
+        currNode = currNode["*"]
         return currNode;
     }
 
@@ -173,7 +174,7 @@ console.dir(trie, { depth: null })
 // // console.log(trie.match("//users", HTTP_METHODS.GET))
 // // console.log(trie.match("//users", HTTP_METHODS.POST))
 // console.log(trie.match("//users/12345/profile/6789", HTTP_METHODS.POST))
-console.log(trie.match("/users/*", HTTP_METHODS.GET))
+console.log(trie.match("/users/some_route/profile/something", HTTP_METHODS.GET))
 
 // wild card
 // /user/:id/*

@@ -7,16 +7,10 @@ const router = new PipeRouter()
 const server = new PipeServer(router);
 
 router.get("/", (req: Request, res: Response) => {
-    res.raw.end("This is the home route!!\n")
-})
-
-
-router.post("/", (req: Request, res: Response) => {
-    res.raw.end("This is from post route!!\n")
+    res.end("hello world")
 })
 
 server.listen(3000, () => {
     console.log("Server is running on port: 3000")
 })
 
-console.log(router)

@@ -1,7 +1,7 @@
 import { HTTP_METHODS } from "../enums/methods.enum";
 import { RouteHandler } from "../types/route-handler";
 
-interface DynamicChild {
+interface ParameterChild {
   parameterName: string;
   node: TrieNode;
 }
@@ -9,8 +9,9 @@ interface DynamicChild {
 class TrieNode {
   handlers: Map<HTTP_METHODS, RouteHandler[]> = new Map();
   staticChildren: Map<string, TrieNode> = new Map();
-  dynamicChild: DynamicChild | null = null;
+  parameterChild: ParameterChild | null = null;
   "*": TrieNode | null = null;
+  isRoute: boolean = false;
 }
 
 class Trie {
@@ -19,7 +20,7 @@ class Trie {
   public register(
     url: string,
     method: HTTP_METHODS,
-    handlers: RouteHandler | RouteHandler[]
+    handlers: RouteHandler | RouteHandler[],
   ) {
     const segments = this.normalizePath(url);
     let currNode = this.root as TrieNode;
@@ -29,7 +30,7 @@ class Trie {
       throw new Error(`Optional parameters should be placed at the end`);
     }
 
-    if (segments.includes("*") && segments[segments.length - 1]) {
+    if (segments.includes("*") && segments[segments.length - 1] != "*") {
       throw new Error(`Wildcard parameters should be placed at the end`);
     }
 
@@ -45,7 +46,7 @@ class Trie {
           handlers,
           hasOptionalParameter,
           method,
-          segments
+          segments,
         );
       }
     }
@@ -64,9 +65,9 @@ class Trie {
         continue;
       }
 
-      if (currNode.dynamicChild) {
-        params[currNode.dynamicChild.parameterName] = segments[i];
-        currNode = currNode.dynamicChild.node;
+      if (currNode.parameterChild) {
+        params[currNode.parameterChild.parameterName] = segments[i];
+        currNode = currNode.parameterChild.node;
         continue;
       }
 
@@ -92,7 +93,7 @@ class Trie {
     handlers: RouteHandler | RouteHandler[],
     hasOptionalParameter: boolean,
     method: HTTP_METHODS,
-    segments: string[]
+    segments: string[],
   ): TrieNode {
     if (!currNode.staticChildren.has(segment)) {
       currNode.staticChildren.set(segment, new TrieNode());
@@ -109,34 +110,34 @@ class Trie {
 
   private registerDynamicSegments(
     segment: string,
-    currNode: TrieNode
+    currNode: TrieNode,
   ): TrieNode {
     const parameterName = this.getParameterName(segment);
 
     if (
-      currNode.dynamicChild?.parameterName &&
-      parameterName != currNode.dynamicChild?.parameterName
+      currNode.parameterChild?.parameterName &&
+      parameterName != currNode.parameterChild?.parameterName
     ) {
       throw new Error(
-        `Conflicting param names :${currNode.dynamicChild?.parameterName} vs :${parameterName}`
+        `Conflicting param names :${currNode.parameterChild?.parameterName} vs :${parameterName}`,
       );
     }
 
-    if (!currNode.dynamicChild?.parameterName) {
-      currNode.dynamicChild = {
+    if (!currNode.parameterChild?.parameterName) {
+      currNode.parameterChild = {
         parameterName: parameterName,
         node: new TrieNode(),
       };
     }
 
-    return currNode.dynamicChild.node;
+    return currNode.parameterChild.node;
   }
 
   private registerHandlers(
     method: HTTP_METHODS,
     handlers: RouteHandler | RouteHandler[],
     currNode: TrieNode,
-    segments: string[]
+    segments: string[],
   ) {
     handlers = Array.isArray(handlers) ? handlers : [handlers];
 
@@ -145,11 +146,12 @@ class Trie {
     if (handlerStack.length)
       throw new Error(
         `Conflict error: /${segments.join(
-          "/"
-        )} route has already been registered.`
+          "/",
+        )} route has already been registered.`,
       );
 
     currNode.handlers.set(method, handlers);
+    currNode.isRoute = true;
   }
 
   private registerWildCardSegment(segment: string, currNode: TrieNode) {
@@ -185,5 +187,35 @@ class Trie {
     return segment.endsWith("*");
   }
 }
+
+const router = new Trie();
+
+// router.register("/users/*", HTTP_METHODS.GET, () => {
+//   console.log("from /users/*");
+// });
+// router.register("/users/:id/*", HTTP_METHODS.GET, () => {
+//   console.log("from /users/:id/*");
+// });
+// router.register("/users/:id/profile", HTTP_METHODS.GET, () => {
+//   console.log("from /users/:id/profile");
+// });
+// router.register("/users/:id/settings/*", HTTP_METHODS.GET, () => {
+//   console.log("from /users/:id/settings/*");
+// });
+// router.register("/users/:id/settings/privacy", HTTP_METHODS.GET, () => {
+//   console.log("from /users/:id/settings/privacy");
+// });
+// router.register("/users/:id/friends/:friendId/*", HTTP_METHODS.GET, () => {
+//   console.log("from /users/:id/friends/:friendId/*");
+// });
+// router.register(
+//   "/users/:id/friends/:friendId/details",
+//   HTTP_METHODS.GET,
+//   () => {
+//     console.log("from /users/:id/friends/:friendId/details");
+//   },
+// );
+
+console.dir(router, { depth: null });
 
 export { Trie, TrieNode };

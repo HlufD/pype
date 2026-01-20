@@ -56,14 +56,25 @@ class Trie {
 
   public match(url: string, method: HTTP_METHODS) {
     const segments = this.normalizePath(url);
-    const params: Record<string, any> = {};
+    let params: Record<string, any> = {};
     let currNode = this.root;
+
+    let wildcardState: {
+      node: TrieNode;
+      index: number;
+      params: Record<string, string>;
+    } | null = null;
+
     let wildcardHandle: TrieNode | null = null;
 
     for (let i = 0; i < segments.length; i++) {
       if (currNode.staticChildren.has(segments[i])) {
-        if (!currNode.staticChildren.get(segments[i])?.isRoute) {
-          wildcardHandle = currNode["*"];
+        if (currNode["*"]) {
+          wildcardState = {
+            node: currNode["*"],
+            index: i,
+            params: { ...params },
+          };
         }
         currNode = currNode.staticChildren.get(segments[i])!;
         continue;
@@ -71,7 +82,11 @@ class Trie {
 
       if (currNode.parameterChild) {
         if (currNode["*"]) {
-          wildcardHandle = currNode["*"];
+          wildcardState = {
+            node: currNode["*"],
+            index: i,
+            params: { ...params },
+          };
         }
         params[currNode.parameterChild.parameterName] = segments[i];
         currNode = currNode.parameterChild.node;
@@ -79,16 +94,26 @@ class Trie {
       }
 
       if (currNode["*"]) {
-        params["*"] = segments.slice(i).join("/");
-        currNode = currNode["*"];
+        wildcardState = {
+          node: currNode["*"]!,
+          index: i,
+          params: { ...params },
+        };
         break;
       }
 
       return null;
     }
 
-    const handlers =
-      currNode.handlers?.get(method) || wildcardHandle?.handlers.get(method);
+    let handlers = currNode.handlers?.get(method);
+
+    if (wildcardState && !handlers) {
+      currNode = wildcardState.node;
+      handlers = currNode.handlers.get(method);
+      params = { ...wildcardState.params };
+      params["*"] = segments.slice(wildcardState.index).join("/");
+    }
+
     if (!handlers) return null;
 
     return { handlers, params };
@@ -200,11 +225,60 @@ const router = new Trie();
 router.register("/users/*", HTTP_METHODS.GET, () => {
   console.log("from -> /users/*");
 });
-
 router.register("/users/:id/*", HTTP_METHODS.GET, () => {
   console.log("from -> /users/:id/*");
 });
-
+router.register("/users/:id/profile", HTTP_METHODS.GET, () => {
+  console.log("from -> /users/:id/profile");
+});
+router.register("/users/:id/settings/*", HTTP_METHODS.GET, () => {
+  console.log("from -> /users/:id/settings/*");
+});
+router.register("/users/:id/settings/privacy", HTTP_METHODS.GET, () => {
+  console.log("from -> /users/:id/settings/privacy");
+});
+router.register("/users/:id/friends/:friendId/*", HTTP_METHODS.GET, () => {
+  console.log("from -> /users/:id/friends/:friendId/*");
+});
+router.register(
+  "/users/:id/friends/:friendId/details",
+  HTTP_METHODS.GET,
+  () => {
+    console.log("from -> /users/:id/friends/:friendId/details");
+  },
+);
 console.dir(router, { depth: null });
+const a: any = "a";
+console.log("==== Test 1 ====");
+const result = router.match("/users/foo", HTTP_METHODS.GET);
+console.log(result);
+router.match("/users/foo", HTTP_METHODS.GET)?.handlers[0](a, a);
+
+console.log("==== Test 2 ====");
+const result2 = router.match("/users/foo/some", HTTP_METHODS.GET);
+console.log(result2);
+router.match("/users/foo/some", HTTP_METHODS.GET)?.handlers[0](a, a);
+
+// console.log("==== Test 3 ====");
+// router.match("/users/foo/profile", HTTP_METHODS.GET)?.handlers[0](a, a);
+
+// console.log("==== Test 4 ====");
+// router.match("/users/foo/settings", HTTP_METHODS.GET)?.handlers[0](a, a);
+
+// console.log("==== Test 5 ====");
+// router
+//   .match("/users/foo/settings/privacy", HTTP_METHODS.GET)
+//   ?.handlers[0](a, a);
+
+// console.log("==== Test 6 ====");
+// router.match("/users/foo/friends/bar", HTTP_METHODS.GET)?.handlers[0](a, a);
+
+// console.log("==== Test 7 ====");
+// router
+//   .match("/users/foo/friends/bar/details", HTTP_METHODS.GET)
+//   ?.handlers[0](a, a);
+
+// console.log("==== Test 8 ====");
+// router.match("/users/unknown/extra/path", HTTP_METHODS.GET)?.handlers[0](a, a);
 
 export { Trie, TrieNode };

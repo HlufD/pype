@@ -81,8 +81,8 @@ class RouteNode {
   }
 }
 
-const router = new RouteNode();
-router.on("//users//some", HTTP_METHODS.GET, () => {});
-router.on("/users/some", HTTP_METHODS.GET, () => {});
+// const router = new RouteNode();
+// router.on("//users//some", HTTP_METHODS.GET, () => {});
+// router.on("/users/some", HTTP_METHODS.GET, () => {});
 
-console.dir(router, { depth: null });
+//console.dir(router, { depth: null });

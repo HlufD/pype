@@ -5,6 +5,7 @@ const enum SEGMENT_TYPE {
   "static" = "static",
   "parametric" = "parametric",
   "wildcard" = "wildcard",
+  "optional" = "optional",
 }
 
 interface Options {
@@ -22,15 +23,18 @@ class Node {
   constructor() {
     this.handlers = new Map();
     this.staticNodes = new Map();
-    this.wildCardNode = null;
     this.parametricNode = null;
+    this.wildCardNode = null;
     this.parameter = null;
   }
 }
 
 class RouteNode {
   private root = new Node();
-  public config: Options = {};
+  public config: Options = {
+    ignoreDuplicateSlashes: false,
+    ignoreTrailingSlash: false,
+  };
 
   constructor(config: Options) {
     this.config = config;
@@ -39,7 +43,6 @@ class RouteNode {
   on(url: string, method: HTTP_METHODS, handlers: RouteHandler[]) {
     let currNode = this.root;
     const segments = this.normalizeUrl(url);
-    console.log(segments);
 
     for (const segment of segments) {
       switch (this.identifySegmentType(segment)) {
@@ -53,6 +56,16 @@ class RouteNode {
 
         case SEGMENT_TYPE.wildcard:
           currNode = this.registerWildcardSegment(segment, currNode);
+          break;
+
+        case SEGMENT_TYPE.optional:
+          currNode = this.registerOptionalSegment(
+            segment,
+            currNode,
+            method,
+            handlers,
+            segments,
+          );
           break;
 
         default:
@@ -75,6 +88,11 @@ class RouteNode {
   private registerParametricNode(segment: string, currNode: Node): Node {
     const parameterName = this.getParamName(segment);
 
+    if (currNode.parametricNode?.parameter !== parameterName)
+      throw new Error(
+        `parameter name conflict: ${parameterName} vs ${currNode.parametricNode?.parameter} `,
+      );
+
     if (!currNode.parametricNode) {
       currNode.parametricNode = new Node();
       currNode.parametricNode.parameter = parameterName;
@@ -85,8 +103,25 @@ class RouteNode {
   }
 
   private registerWildcardSegment(segment: string, currNode: Node): Node {
-    currNode.wildCardNode = new Node();
+    if (!currNode.wildCardNode) currNode.wildCardNode = new Node();
     currNode = currNode.wildCardNode;
+    return currNode;
+  }
+
+  private registerOptionalSegment(
+    segment: string,
+    currNode: Node,
+    method: HTTP_METHODS,
+    handlers: RouteHandler[],
+    segments: string[],
+  ): Node {
+    const parameterName = this.getParamName(segment).replace(/\?/, "");
+    this.registerHandlers(method, handlers, currNode, segments);
+
+    if (!currNode.parametricNode) currNode.parametricNode = new Node();
+
+    currNode = currNode.parametricNode;
+    currNode.parameter = parameterName;
     return currNode;
   }
 
@@ -103,13 +138,12 @@ class RouteNode {
   }
 
   private identifySegmentType(segment: string): SEGMENT_TYPE {
-    if (segment.startsWith(":")) {
+    if (segment.startsWith(":") && !segment.endsWith("?"))
       return SEGMENT_TYPE.parametric;
-    }
 
-    if (segment.endsWith("*")) {
-      return SEGMENT_TYPE.wildcard;
-    }
+    if (segment.endsWith("*")) return SEGMENT_TYPE.wildcard;
+
+    if (segment.endsWith("?")) return SEGMENT_TYPE.optional;
 
     return SEGMENT_TYPE.static;
   }
@@ -120,10 +154,7 @@ class RouteNode {
     currNode: Node,
     segments: string[],
   ) {
-    if (
-      this.config.ignoreDuplicateSlashes &&
-      this.isDuplicatePath(method, currNode)
-    ) {
+    if (this.isDuplicatePath(method, currNode)) {
       throw new Error(`Duplicate routes at: /${segments.join("/")}`);
     }
 
@@ -140,8 +171,12 @@ class RouteNode {
 
   private splitPath(url: string) {
     if (url === "/") return [""];
-    const segments = url.match(/[^/]+|(?<=\/$)/g) || [];
-    return segments;
+
+    const parts = url.split("/");
+
+    if (parts[0] === "") parts.shift();
+
+    return parts;
   }
 }
 
@@ -150,10 +185,25 @@ const router = new RouteNode({
   ignoreTrailingSlash: true,
 });
 
-router.on("/users//", HTTP_METHODS.GET, [() => {}]);
+//router.on("/users//", HTTP_METHODS.GET, [() => {}]);
+// router.on("/users//", HTTP_METHODS.GET, [() => {}]);
 // router.on("/users", HTTP_METHODS.GET, [() => {}]);
 // router.on("/users/", HTTP_METHODS.GET, [() => {}]);
-// router.on("/:id", HTTP_METHODS.GET, [() => {}]);
+
+//router.on("/:id", HTTP_METHODS.GET, [() => {}]);
+// router.on("/:userId", HTTP_METHODS.GET, [() => {}]);
+// router.on("/:id/:usersId", HTTP_METHODS.GET, [() => {}]);
+
 // router.on("/*", HTTP_METHODS.GET, [() => {}]);
+// router.on("/users/*", HTTP_METHODS.GET, [() => {}]);
+
+// optional params
+// router.on("/users/:id?", HTTP_METHODS.GET, [() => {}]);
+// router.on("/users/*", HTTP_METHODS.GET, [() => {}]);
+
+// conflict detection
+
+router.on("/users/:id/*", HTTP_METHODS.GET, [() => {}]);
+router.on("/users/:userId", HTTP_METHODS.GET, [() => {}]);
 
 console.dir(router, { depth: null });

@@ -9,6 +9,7 @@ const enum SEGMENT_TYPE {
 
 interface Options {
   ignoreDuplicateSlashes?: boolean;
+  ignoreTrailingSlash?: boolean;
 }
 
 class Node {
@@ -30,6 +31,7 @@ class Node {
 class RouteNode {
   private root = new Node();
   public config: Options = {};
+
   constructor(config: Options) {
     this.config = config;
   }
@@ -134,11 +136,15 @@ class RouteNode {
   }
 }
 
-const router = new RouteNode({ ignoreDuplicateSlashes: true });
+const router = new RouteNode({
+  ignoreDuplicateSlashes: false,
+  ignoreTrailingSlash: false,
+});
 
+router.on("/", HTTP_METHODS.GET, [() => {}]);
 // router.on("//users//some", HTTP_METHODS.GET, () => {});
 //router.on("/users/some", HTTP_METHODS.GET, () => {});
-router.on("/:id", HTTP_METHODS.GET, [() => {}]);
-router.on("/*", HTTP_METHODS.GET, [() => {}]);
+// router.on("/:id", HTTP_METHODS.GET, [() => {}]);
+// router.on("/*", HTTP_METHODS.GET, [() => {}]);
 
 console.dir(router, { depth: null });

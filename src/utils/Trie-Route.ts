@@ -87,8 +87,9 @@ class RouteNode {
 
   private registerParametricNode(segment: string, currNode: Node): Node {
     const parameterName = this.getParamName(segment);
+    const saveParameterName = currNode.parametricNode?.parameter;
 
-    if (currNode.parametricNode?.parameter !== parameterName)
+    if (saveParameterName && saveParameterName !== parameterName)
       throw new Error(
         `parameter name conflict: ${parameterName} vs ${currNode.parametricNode?.parameter} `,
       );

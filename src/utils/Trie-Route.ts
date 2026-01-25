@@ -41,27 +41,27 @@ class RouteNode {
   }
 
   register(url: string, method: HTTP_METHODS, handlers: RouteHandler[]) {
-    let currNode = this.root;
+    let currentNode = this.root;
     const segments = this.normalizeUrl(url);
 
     for (const segment of segments) {
       switch (this.identifySegmentType(segment)) {
         case SEGMENT_TYPE.static:
-          currNode = this.registerStaticNode(segment, currNode);
+          currentNode = this.registerStaticNode(segment, currentNode);
           break;
 
         case SEGMENT_TYPE.parametric:
-          currNode = this.registerParametricNode(segment, currNode);
+          currentNode = this.registerParametricNode(segment, currentNode);
           break;
 
         case SEGMENT_TYPE.wildcard:
-          currNode = this.registerWildcardSegment(segment, currNode);
+          currentNode = this.registerWildcardSegment(segment, currentNode);
           break;
 
         case SEGMENT_TYPE.optional:
-          currNode = this.registerOptionalSegment(
+          currentNode = this.registerOptionalSegment(
             segment,
-            currNode,
+            currentNode,
             method,
             handlers,
             segments,
@@ -73,57 +73,63 @@ class RouteNode {
       }
     }
 
-    this.registerHandlers(method, handlers, currNode, segments);
+    this.registerHandlers(method, handlers, currentNode, segments);
   }
 
-  private registerStaticNode(segment: string, currNode: Node): Node {
-    if (!currNode.staticNodes.has(segment)) {
-      currNode.staticNodes.set(segment, new Node());
+  match(url: string, method: HTTP_METHODS) {
+    const segments = this.normalizeUrl(url);
+    let currentNode = this.root;
+    let params: Record<string, any> = {};
+  }
+
+  private registerStaticNode(segment: string, currentNode: Node): Node {
+    if (!currentNode.staticNodes.has(segment)) {
+      currentNode.staticNodes.set(segment, new Node());
     }
 
-    currNode = currNode.staticNodes.get(segment)!;
-    return currNode;
+    currentNode = currentNode.staticNodes.get(segment)!;
+    return currentNode;
   }
 
-  private registerParametricNode(segment: string, currNode: Node): Node {
+  private registerParametricNode(segment: string, currentNode: Node): Node {
     const parameterName = this.getParamName(segment);
-    const saveParameterName = currNode.parametricNode?.parameter;
+    const saveParameterName = currentNode.parametricNode?.parameter;
 
     if (saveParameterName && saveParameterName !== parameterName)
       throw new Error(
-        `parameter name conflict: ${parameterName} vs ${currNode.parametricNode?.parameter} `,
+        `parameter name conflict: ${parameterName} vs ${currentNode.parametricNode?.parameter} `,
       );
 
-    if (!currNode.parametricNode) {
-      currNode.parametricNode = new Node();
-      currNode.parametricNode.parameter = parameterName;
+    if (!currentNode.parametricNode) {
+      currentNode.parametricNode = new Node();
+      currentNode.parametricNode.parameter = parameterName;
     }
 
-    currNode = currNode.parametricNode;
-    return currNode;
+    currentNode = currentNode.parametricNode;
+    return currentNode;
   }
 
-  private registerWildcardSegment(_: string, currNode: Node): Node {
-    if (!currNode.wildCardNode) currNode.wildCardNode = new Node();
-    currNode = currNode.wildCardNode;
-    return currNode;
+  private registerWildcardSegment(_: string, currentNode: Node): Node {
+    if (!currentNode.wildCardNode) currentNode.wildCardNode = new Node();
+    currentNode = currentNode.wildCardNode;
+    return currentNode;
   }
 
   private registerOptionalSegment(
     segment: string,
-    currNode: Node,
+    currentNode: Node,
     method: HTTP_METHODS,
     handlers: RouteHandler[],
     segments: string[],
   ): Node {
     const parameterName = this.getParamName(segment).replace(/\?/, "");
-    this.registerHandlers(method, handlers, currNode, segments);
+    this.registerHandlers(method, handlers, currentNode, segments);
 
-    if (!currNode.parametricNode) currNode.parametricNode = new Node();
+    if (!currentNode.parametricNode) currentNode.parametricNode = new Node();
 
-    currNode = currNode.parametricNode;
-    currNode.parameter = parameterName;
-    return currNode;
+    currentNode = currentNode.parametricNode;
+    currentNode.parameter = parameterName;
+    return currentNode;
   }
 
   private normalizeUrl(url: string) {
@@ -152,18 +158,18 @@ class RouteNode {
   private registerHandlers(
     method: HTTP_METHODS,
     handlers: RouteHandler[],
-    currNode: Node,
+    currentNode: Node,
     segments: string[],
   ) {
-    if (this.isDuplicatePath(method, currNode)) {
+    if (this.isDuplicatePath(method, currentNode)) {
       throw new Error(`Duplicate routes at: /${segments.join("/")}`);
     }
 
-    currNode.handlers.set(method, handlers);
+    currentNode.handlers.set(method, handlers);
   }
 
-  private isDuplicatePath(method: HTTP_METHODS, currNode: Node) {
-    return currNode.handlers.get(method) ? true : false;
+  private isDuplicatePath(method: HTTP_METHODS, currentNode: Node) {
+    return currentNode.handlers.get(method) ? true : false;
   }
 
   private getParamName(segment: string) {

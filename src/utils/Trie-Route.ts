@@ -93,6 +93,7 @@ class RouteNode {
       if (currentNode.staticNodes.has(segment)) {
         if (currentNode.wildCardNode)
           wildcardState = this.saveWildcardState(currentNode, i, params);
+
         const staticChild = currentNode.staticNodes.get(segment)!;
         currentNode = staticChild;
       } else if (currentNode.parametricNode) {
@@ -104,7 +105,6 @@ class RouteNode {
         currentNode = parametricChild;
       } else if (currentNode.wildCardNode) {
         wildcardState = this.saveWildcardState(currentNode, i, params);
-        const finalWildcard = wildcardState;
         break;
       }
     }

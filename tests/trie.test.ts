@@ -99,12 +99,6 @@ describe("Wildcard route registration", () => {
     ).not.toThrow();
   });
 
-  it("should allow optional param followed by static segment", () => {
-    expect(() =>
-      router.register("/users/:id?/details", HTTP_METHODS.GET, [() => {}]),
-    ).not.toThrow();
-  });
-
   it("should throw duplicate path when registering /users/:id? twice", () => {
     router.register("/users/:id?", HTTP_METHODS.GET, [() => {}]);
 
@@ -141,12 +135,6 @@ describe("Optional parameter registration", () => {
     expect(() =>
       router.register("/users/*", HTTP_METHODS.GET, [() => {}]),
     ).toThrow("Duplicate routes");
-  });
-
-  it("should allow wildcard in the middle of a path (no restriction enforced)", () => {
-    expect(() =>
-      router.register("/users/*/details", HTTP_METHODS.GET, [() => {}]),
-    ).not.toThrow();
   });
 });
 
@@ -477,5 +465,60 @@ describe("Matching – negative cases", () => {
     router.register("/users/*", HTTP_METHODS.POST, [() => {}]);
 
     expect(router.match("/users/anything", HTTP_METHODS.GET)).toBeNull();
+  });
+});
+
+describe("RouteNode.validateUrl", () => {
+  let router: RouteNode;
+
+  beforeEach(() => {
+    router = new RouteNode({
+      ignoreDuplicateSlashes: true,
+      ignoreTrailingSlash: true,
+    });
+  });
+
+  it("should allow valid static URLs", () => {
+    expect(() =>
+      router.register("/users", HTTP_METHODS.GET, [() => {}]),
+    ).not.toThrow();
+
+    expect(() =>
+      router.register("/", HTTP_METHODS.GET, [() => {}]),
+    ).not.toThrow();
+  });
+
+  it("should allow valid optional parameter at the end", () => {
+    expect(() =>
+      router.register("/users/:id?", HTTP_METHODS.GET, [() => {}]),
+    ).not.toThrow();
+  });
+
+  it("should allow valid wildcard at the end", () => {
+    expect(() =>
+      router.register("/files/*", HTTP_METHODS.GET, [() => {}]),
+    ).not.toThrow();
+  });
+
+  it("should throw if URL does not start with /", () => {
+    expect(() =>
+      router.register("users", HTTP_METHODS.GET, [() => {}]),
+    ).toThrow("Invalid URL: users. URL must start with a '/'");
+  });
+
+  it("should throw if optional param is not at the end", () => {
+    expect(() =>
+      router.register("/users/:id?/details", HTTP_METHODS.GET, [() => {}]),
+    ).toThrow(
+      "Invalid URL: /users/:id?/details. Optional parameters can only be at the end of the URL",
+    );
+  });
+
+  it("should throw if wildcard is not at the end", () => {
+    expect(() =>
+      router.register("/files/*/download", HTTP_METHODS.GET, [() => {}]),
+    ).toThrow(
+      "Invalid URL: /files/*/download. Wildcard parameters can only be at the end of the URL",
+    );
   });
 });

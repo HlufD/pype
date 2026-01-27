@@ -47,6 +47,7 @@ class RouteNode {
   }
 
   register(url: string, method: HTTP_METHODS, handlers: RouteHandler[]) {
+    this.validateUrl(url);
     let currentNode = this.root;
     const segments = this.normalizeUrl(url);
 
@@ -83,6 +84,7 @@ class RouteNode {
   }
 
   match(url: string, method: HTTP_METHODS) {
+    this.validateUrl(url);
     const segments = this.normalizeUrl(url);
     let currentNode = this.root;
     let params: Record<string, any> = {};
@@ -191,6 +193,24 @@ class RouteNode {
       index,
       params: { ...params },
     };
+  }
+
+  private validateUrl(url: string) {
+    if (!url.startsWith("/")) {
+      throw new Error(`Invalid URL: ${url}. URL must start with a '/'`);
+    }
+
+    if (url.includes("?") && !url.endsWith("?")) {
+      throw new Error(
+        `Invalid URL: ${url}. Optional parameters can only be at the end of the URL`,
+      );
+    }
+
+    if (url.includes("*") && !url.endsWith("*")) {
+      throw new Error(
+        `Invalid URL: ${url}. Wildcard parameters can only be at the end of the URL`,
+      );
+    }
   }
 
   private normalizeUrl(url: string) {

@@ -3,13 +3,13 @@ import { PipeRouter } from "./router";
 import { HTTP_METHODS } from "../enums/methods.enum";
 import { Request } from "../types/request";
 import { Response } from "../types/response";
-import { NextFunction } from "../types/middleware";
+import { Middleware, NextFunction } from "../types/middleware";
 import { RouteHandler } from "../types/route-handler";
 export class PipeServer {
   private router: PipeRouter;
 
-  constructor(router: PipeRouter) {
-    this.router = router;
+  constructor() {
+    this.router = new PipeRouter();
   }
 
   public listen(port: number, callback?: () => void) {
@@ -65,5 +65,41 @@ export class PipeServer {
     res.statusCode = 500;
     res.setHeader("Content-Type", "application/json");
     res.end("Internal server error.");
+  }
+
+  // router methods
+
+  get(url: string, routeHandler: RouteHandler) {
+    this.router.get(url, routeHandler);
+    return this;
+  }
+
+  post(url: string, routeHandler: RouteHandler) {
+    this.router.post(url, routeHandler);
+    return this;
+  }
+
+  delete(url: string, routeHandler: RouteHandler) {
+    this.router.delete(url, routeHandler);
+    return this;
+  }
+
+  patch(url: string, routeHandler: RouteHandler) {
+    this.router.patch(url, routeHandler);
+    return this;
+  }
+
+  put(url: string, routeHandler: RouteHandler) {
+    this.router.put(url, routeHandler);
+    return this;
+  }
+
+  use(middleware: Middleware) {
+    this.router.use(middleware);
+    return this;
+  }
+
+  route(url: string) {
+    return this.router.route(url);
   }
 }

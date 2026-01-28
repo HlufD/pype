@@ -4,6 +4,40 @@ import { RouteHandler } from "../types/route-handler";
 import { Router } from "../types/router";
 import { RouteNode } from "../utils/Trie-Route";
 
+class RouteBuilder {
+  constructor(
+    private path: string,
+    private router: PipeRouter,
+  ) {
+    this.path = path;
+    this.router = router;
+  }
+  get(routeHandler: RouteHandler) {
+    this.router.get(this.path, routeHandler);
+    return this;
+  }
+
+  post(routeHandler: RouteHandler) {
+    this.router.post(this.path, routeHandler);
+    return this;
+  }
+
+  put(routeHandler: RouteHandler) {
+    this.router.put(this.path, routeHandler);
+    return this;
+  }
+
+  delete(routeHandler: RouteHandler) {
+    this.router.delete(this.path, routeHandler);
+    return this;
+  }
+
+  patch(routeHandler: RouteHandler) {
+    this.router.patch(this.path, routeHandler);
+    return this;
+  }
+}
+
 export class PipeRouter implements Router {
   private router = new RouteNode({
     ignoreDuplicateSlashes: false,
@@ -46,5 +80,9 @@ export class PipeRouter implements Router {
 
   use(middleware: Middleware) {
     this.globalMiddlewares.push(middleware);
+  }
+
+  route(path: string) {
+    return new RouteBuilder(path, this);
   }
 }

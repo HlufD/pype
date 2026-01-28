@@ -1,4 +1,8 @@
 import { Request } from "./request";
 import { Response } from "./response";
 
-type RouteHandler = (req: Request, res: Response) => void | Promise<void> | any;
+type RouteHandler = (
+  req: Request,
+  res: Response,
+  next?: () => any,
+) => void | Promise<void> | any;

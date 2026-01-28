@@ -20,6 +20,7 @@ export class PipeServer {
       method?.toLocaleLowerCase() as HTTP_METHODS,
       path,
     );
+
     if (matchedRoute) {
       matchedRoute.handlers.forEach((handler) => {
         handler(req, res);

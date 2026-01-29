@@ -1,5 +1,3 @@
-import { IncomingMessage } from "node:http"
+import { IncomingMessage } from "node:http";
 
-class Request extends IncomingMessage {
-
-}
+class Request {}

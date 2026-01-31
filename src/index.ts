@@ -1,31 +1,23 @@
-import { PipeServer } from "./core/server";
-import { NextFunction } from "./types/middleware";
-import { Request } from "./types/request";
-import { Response } from "./types/response";
+// import { PipeRouter } from "./core/router";
 
-const app = new PipeServer();
+import { PipeRouter } from "./core/router";
 
-app.use((req: Request, res: Response, next: NextFunction) => {
-  console.log("This runs first");
-  next();
+const router = new PipeRouter();
+
+router.get("/users", () => {
+  console.log("/users");
 });
 
-app.get("/", async (req: Request, res: Response) => {
-  console.log("this runs second");
-  res.end("hello world");
+router.get("/users/:id", () => {
+  console.log("/users/:id");
 });
 
-app
-  .route("/someone")
-  .get((req: Request, res: Response) => {
-    console.log("This is from /someone GET");
-    res.end("Hello ");
-  })
-  .post((req: Request, res: Response) => {
-    console.log("This is from /someone POST");
-    res.end("Hello ");
-  });
+router.use("/api/v1", router);
 
-app.listen(3000, () => {
-  console.log("Server is running on port: 3000");
-});
+router
+  .route("/some/:id")
+  .get(() => {})
+  .delete(() => {})
+  .patch(() => {});
+
+console.log(router);

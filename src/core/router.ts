@@ -1,23 +1,96 @@
 import { HTTP_METHODS } from "../enums/methods.enum";
-import { Middleware } from "../types/middleware";
+
 import { RouteHandler } from "../types/route-handler";
-import { Router } from "../types/router";
-import { RouteNode } from "../utils/Trie-Route";
+import { RouteDefinition, Router } from "../types/router";
+
+class RouterBuilder {
+  constructor(
+    private path: string,
+    private router: PipeRouter,
+  ) {
+    this.path = path;
+  }
+
+  get(...handlers: RouteHandler[]): this {
+    this.router.addRoutes({
+      handlers,
+      method: HTTP_METHODS.GET,
+      path: this.path,
+    });
+    return this;
+  }
+
+  post(...handlers: RouteHandler[]): this {
+    this.router.addRoutes({
+      handlers,
+      method: HTTP_METHODS.POST,
+      path: this.path,
+    });
+    return this;
+  }
+
+  put(...handlers: RouteHandler[]): this {
+    this.router.addRoutes({
+      handlers,
+      method: HTTP_METHODS.PUT,
+      path: this.path,
+    });
+    return this;
+  }
+
+  delete(...handlers: RouteHandler[]): this {
+    this.router.addRoutes({
+      handlers,
+      method: HTTP_METHODS.DELETE,
+      path: this.path,
+    });
+    return this;
+  }
+
+  patch(...handlers: RouteHandler[]): this {
+    this.router.addRoutes({
+      handlers,
+      method: HTTP_METHODS.PATCH,
+      path: this.path,
+    });
+    return this;
+  }
+}
 
 export class PipeRouter implements Router {
-  get(url: String, routHandler: RouteHandler): void {
-    throw new Error("Method not implemented.");
+  private readonly routes: RouteDefinition[] = [];
+
+  public get(path: string, ...handlers: RouteHandler[]): void {
+    this.routes.push({ handlers, path, method: HTTP_METHODS.GET });
   }
-  post(url: String, routHandler: RouteHandler): void {
-    throw new Error("Method not implemented.");
+
+  public post(path: string, ...handlers: RouteHandler[]): void {
+    this.routes.push({ handlers, path, method: HTTP_METHODS.POST });
   }
-  put(url: String, routHandler: RouteHandler): void {
-    throw new Error("Method not implemented.");
+
+  public put(path: string, ...handlers: RouteHandler[]): void {
+    this.routes.push({ handlers, path, method: HTTP_METHODS.PUT });
   }
-  delete(url: String, routHandler: RouteHandler): void {
-    throw new Error("Method not implemented.");
+
+  public delete(path: string, ...handlers: RouteHandler[]): void {
+    this.routes.push({ handlers, path, method: HTTP_METHODS.DELETE });
   }
-  patch(url: String, routHandler: RouteHandler): void {
-    throw new Error("Method not implemented.");
+
+  public patch(path: string, ...handlers: RouteHandler[]): void {
+    this.routes.push({ handlers, path, method: HTTP_METHODS.PATCH });
+  }
+
+  public use(prefix: string, router: PipeRouter): void {
+    const { routes } = router;
+    for (let i = 0; i < routes.length; i++) {
+      routes[i].path = prefix + routes[i].path;
+    }
+  }
+  public route(path: string) {
+    return new RouterBuilder(path, this);
+  }
+
+  public addRoutes(route: RouteDefinition) {
+    this.routes.push(route);
   }
 }

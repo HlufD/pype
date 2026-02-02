@@ -21,4 +21,6 @@ router.use("/api/v2", router);
 //   .delete(() => {})
 //   .patch(() => {});
 
-console.dir(router, { depth: null });
+// console.dir(router, { depth: null });
+
+console.log(router.collectRoutes(router));

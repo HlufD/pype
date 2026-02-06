@@ -1,7 +1,7 @@
 import { ServerResponse } from "node:http";
 
 class Response {
-  constructor(private response: ServerResponse) {
+  constructor(response: ServerResponse) {
     this.response = response;
   }
 }

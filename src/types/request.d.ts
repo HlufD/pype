@@ -1,7 +1,8 @@
 import { IncomingMessage } from "node:http";
 
 class Request {
-  constructor(private request: IncomingMessage) {
+  constructor(request: IncomingMessage) {
     this.request = request;
   }
+  params: Record<string, any> = {};
 }

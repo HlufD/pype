@@ -5,14 +5,19 @@ import { RouteNode } from "../utils/Trie-Route";
 import { PipeRouter } from "./router";
 import { Request } from "./request";
 import { Response } from "./response";
+import { Middleware } from "../types/middleware";
 
 export class PipeServer {
   routes: RouteNode;
+  middlewares: Middleware[];
+
   constructor() {
     this.routes = new RouteNode({
       ignoreDuplicateSlashes: true,
       ignoreTrailingSlash: true,
     });
+
+    this.middlewares = [];
   }
 
   public listen(port: number, callback?: () => void) {

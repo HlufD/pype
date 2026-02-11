@@ -50,13 +50,14 @@ export class PipeServer {
     }
   }
 
-  public use(arg1: string | RouteHandler, arg2?: PipeRouter | RouteHandler) {
+  public use(arg1: string | Middleware, arg2?: PipeRouter | Middleware) {
     if (typeof arg1 === "function") {
       this.middlewares.push(arg1);
       return;
     }
 
     if (typeof arg1 === "string" && typeof arg2 === "function") {
+      console.log("path", arg1);
       // need to implement this next
     }
 

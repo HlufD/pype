@@ -5,7 +5,7 @@ import { RouteNode } from "../utils/Trie-Route";
 import { PipeRouter } from "./router";
 import { Request } from "./request";
 import { Response } from "./response";
-import { Middleware } from "../types/middleware";
+import { Middleware, NextFunction } from "../types/middleware";
 
 export class PipeServer {
   routes: RouteNode;
@@ -50,11 +50,25 @@ export class PipeServer {
     }
   }
 
-  public use(path: string, router: PipeRouter) {
-    const routes = router.collectRoutes(router, path);
-    for (let i = 0; i < routes.length; i++) {
-      const route = routes[i];
-      this.routes.register(route.path, route.method, route.handlers);
+  public use(arg1: string | RouteHandler, arg2?: PipeRouter | RouteHandler) {
+    if (typeof arg1 === "function") {
+      this.middlewares.push(arg1);
+      return;
+    }
+
+    if (typeof arg1 === "string" && typeof arg2 === "function") {
+      // need to implement this next
+    }
+
+    // this is route mounting , not middleware
+    if (typeof arg1 === "string" && arg2 instanceof PipeRouter) {
+      const path = arg1;
+      const router = arg2;
+      const routes = router.collectRoutes(router, path);
+      for (let i = 0; i < routes.length; i++) {
+        const route = routes[i];
+        this.routes.register(route.path, route.method, route.handlers);
+      }
     }
   }
 

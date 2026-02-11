@@ -56,7 +56,6 @@ export class PipeServer {
     res: Response,
     handlers: RouteHandler[] | Middleware[],
   ) {
-    console.log(handlers);
     let start = 0;
     const next = () => {
       if (res.raw.writableEnded) return;
@@ -83,8 +82,17 @@ export class PipeServer {
     }
 
     if (typeof arg1 === "string" && typeof arg2 === "function") {
-      console.log("path", arg1);
-      // need to implement this next
+      const path = arg1;
+      const handler = arg2;
+
+      this.middlewares.push(
+        (req: Request, res: Response, next: NextFunction) => {
+          if (req.url.startsWith(path)) return handler(req, res, next);
+          else next();
+        },
+      );
+
+      return;
     }
 
     if (typeof arg1 === "string" && arg2 instanceof PipeRouter) {

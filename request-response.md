@@ -55,5 +55,3 @@ This is a checklist of methods and properties you can add to your custom `Reques
 | `req.stale`          | True if request is stale                     | [ ]         |
 | `req.subdomains`     | Array of subdomains                          | [ ]         |
 | `req.xhr`            | True if request was issued by XMLHttpRequest | [ ]         |
-
-_You can add or remove rows depending on which features you want to implement for your custom Node framework._

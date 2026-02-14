@@ -5,5 +5,7 @@ export interface Request extends IncomingMessage {
 
   query?: Record<string, string | string[]>;
 
+  body: Record<string, any>;
+
   get(header: string): string | string[] | undefined;
 }

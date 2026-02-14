@@ -5,13 +5,13 @@ import { RouteDefinition, Router } from "../types/router";
 
 interface Layer {
   prefix: string;
-  router: PipeRouter;
+  router: PypeRouter;
 }
 
 class RouterBuilder {
   constructor(
     private path: string,
-    private router: PipeRouter,
+    private router: PypeRouter,
   ) {
     this.path = path;
   }
@@ -62,7 +62,7 @@ class RouterBuilder {
   }
 }
 
-export class PipeRouter implements Router {
+export class PypeRouter implements Router {
   private readonly routes: RouteDefinition[] = [];
   private readonly layers: Layer[] = [];
 
@@ -86,7 +86,7 @@ export class PipeRouter implements Router {
     this.routes.push({ handlers, path, method: HTTP_METHODS.PATCH });
   }
 
-  public use(prefix: string, router: PipeRouter): void {
+  public use(prefix: string, router: PypeRouter): void {
     this.layers.push({ prefix, router });
   }
 
@@ -98,7 +98,7 @@ export class PipeRouter implements Router {
     this.routes.push(route);
   }
 
-  public collectRoutes(router: PipeRouter, basePath: string = "") {
+  public collectRoutes(router: PypeRouter, basePath: string = "") {
     const { layers, routes } = router;
     const collectedRoutes: RouteDefinition[] = [];
 

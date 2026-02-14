@@ -1,16 +1,16 @@
-import { PipeRouter } from "./core/router";
-import { PipeServer } from "./core/server";
+import { PypeRouter } from "./core/router";
+import { PypeServer } from "./core/server";
 import { NextFunction } from "./types/next-function";
 import { Request } from "./types/request";
 import { Response } from "./types/response";
 
 const port = 3000;
 
-export { PipeServer } from "./core/server";
+export { PypeServer } from "./core/server";
 
-const userRouter = new PipeRouter();
+const userRouter = new PypeRouter();
 
-const someRouter = new PipeRouter();
+const someRouter = new PypeRouter();
 
 userRouter.get("/users", (eq: Request, res: Response) => {
   res.json({ users: [{ name: "John" }] });
@@ -24,7 +24,7 @@ someRouter.get("/some/route", (req: Request, res: Response) => {
   return res.json({ message: "This is from the /some route" });
 });
 
-const app = new PipeServer();
+const app = new PypeServer();
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   console.log("this is from the middleware.");

@@ -2,13 +2,13 @@ import { IncomingMessage, ServerResponse, createServer } from "http";
 import { HTTP_METHODS } from "../enums/methods.enum";
 import { RouteHandler } from "../types/route-handler";
 import { RouteNode } from "../utils/Trie-Route";
-import { PipeRouter } from "./router";
+import { PypeRouter } from "./router";
 import { NextFunction } from "../types/next-function";
 import { Middleware } from "../types/middleware";
 import { Request } from "../types/request";
 import { Response } from "../types/response";
 
-export class PipeServer {
+export class PypeServer {
   routes: RouteNode;
   pypeMiddlewares: Middleware[];
 
@@ -72,7 +72,7 @@ export class PipeServer {
     next();
   }
 
-  public use(arg1: string | Middleware, arg2?: PipeRouter | Middleware) {
+  public use(arg1: string | Middleware, arg2?: PypeRouter | Middleware) {
     if (typeof arg1 === "function") {
       this.pypeMiddlewares.push(arg1);
       return;
@@ -92,7 +92,7 @@ export class PipeServer {
       return;
     }
 
-    if (typeof arg1 === "string" && arg2 instanceof PipeRouter) {
+    if (typeof arg1 === "string" && arg2 instanceof PypeRouter) {
       const path = arg1;
       const router = arg2;
       const routes = router.collectRoutes(router, path);

@@ -2,7 +2,7 @@ import { Request } from "./core/request";
 import { Response } from "./core/response";
 import { PipeRouter } from "./core/router";
 import { PipeServer } from "./core/server";
-import { NextFunction } from "./types/middleware";
+import { NextFunction } from "./types/next-function";
 
 const port = 3000;
 

@@ -1,4 +1,9 @@
-import { IncomingMessage, ServerResponse, createServer } from "http";
+import {
+  IncomingMessage,
+  STATUS_CODES,
+  ServerResponse,
+  createServer,
+} from "http";
 import { HTTP_METHODS } from "../enums/methods.enum";
 import { RouteHandler } from "../types/route-handler";
 import { RouteNode } from "../utils/Trie-Route";
@@ -151,6 +156,11 @@ export class PypeServer {
   private decorateResponse(res: Response) {
     res.status = function (code: number) {
       this.statusCode = code;
+      return this;
+    };
+
+    res.sendStatus = function (code: number) {
+      this.status(code).send(STATUS_CODES[code] || String(code));
       return this;
     };
 

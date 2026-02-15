@@ -3,7 +3,7 @@ import { ServerResponse } from "node:http";
 export interface Response extends ServerResponse {
   status(code: number): this;
 
-  json(data: Record<string, any>): void;
+  json(data: Record<string, any>): this;
 
   send(...args: any[]): void;
 
@@ -39,6 +39,4 @@ export interface Response extends ServerResponse {
   download(...args: any[]): void;
 
   charset(...args: any[]): void;
-
-  getHeaderNames(): string[];
 }

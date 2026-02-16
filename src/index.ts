@@ -9,8 +9,9 @@ const port = 3000;
 export { PypeServer } from "./core/server";
 
 const userRouter = new PypeRouter();
-
 const someRouter = new PypeRouter();
+
+const app = new PypeServer();
 
 userRouter.get("/users", (eq: Request, res: Response) => {
   res.json({ users: [{ name: "John" }] });
@@ -23,8 +24,6 @@ userRouter.get("/users/:id", (req: Request, res: Response) => {
 someRouter.get("/some/route", (req: Request, res: Response) => {
   return res.json({ message: "This is from the /some route" });
 });
-
-const app = new PypeServer();
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   console.log("this is from the middleware.");

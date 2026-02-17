@@ -1,17 +1,17 @@
 import { PypeRouter } from "./core/router";
-import { PypeServer } from "./core/server";
+import { Pype } from "./core/server";
 import { NextFunction } from "./types/next-function";
 import { Request } from "./types/request";
 import { Response } from "./types/response";
 
 const port = 3000;
 
-export { PypeServer } from "./core/server";
+export { Pype } from "./core/server";
 
 const userRouter = new PypeRouter();
 const someRouter = new PypeRouter();
 
-const app = new PypeServer();
+const app = new Pype();
 
 userRouter.get("/users", (eq: Request, res: Response) => {
   res.json({ users: [{ name: "John" }] });

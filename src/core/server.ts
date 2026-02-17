@@ -12,6 +12,7 @@ import { NextFunction } from "../types/next-function";
 import { Middleware } from "../types/middleware";
 import { Request } from "../types/request";
 import { Response } from "../types/response";
+import { MIME_TYPES } from "../types/mime-types";
 
 export class PypeServer {
   routes: RouteNode;
@@ -160,31 +161,33 @@ export class PypeServer {
     };
 
     res.sendStatus = function (code: number) {
-      this.status(code).send(STATUS_CODES[code] || String(code));
+      this.status(code);
+      this.type("txt");
+      this.send(STATUS_CODES[code] || String(code));
       return this;
     };
 
     res.send = function (body?: any) {
       if (this.writableEnded) return this;
 
-      if (typeof body === "number") {
-        this.statusCode = body;
-        body = `${body}`;
+      if (Buffer.isBuffer(body)) {
         if (!this.getHeader("Content-Type")) {
-          this.setHeader("Content-Type", "text/plain; charset=utf-8");
+          this.setHeader("Content-Type", "application/octet-stream");
         }
       } else if (typeof body === "object" && body !== null) {
         if (!this.getHeader("Content-Type")) {
           this.setHeader("Content-Type", "application/json; charset=utf-8");
         }
         body = JSON.stringify(body);
+      } else if (typeof body === "number") {
+        this.statusCode = body;
+        body = String(body);
+        if (!this.getHeader("Content-Type")) {
+          this.setHeader("Content-Type", "text/plain; charset=utf-8");
+        }
       } else if (typeof body === "string") {
         if (!this.getHeader("Content-Type")) {
           this.setHeader("Content-Type", "text/html; charset=utf-8");
-        }
-      } else if (Buffer.isBuffer(body)) {
-        if (!this.getHeader("Content-Type")) {
-          this.setHeader("Content-Type", "application/octet-stream");
         }
       }
 
@@ -195,7 +198,10 @@ export class PypeServer {
             : Buffer.isBuffer(body)
               ? body.length
               : 0;
-        if (length > 0) this.setHeader("Content-Length", length.toString());
+
+        if (length > 0) {
+          this.setHeader("Content-Length", length.toString());
+        }
       }
 
       this.end(body);
@@ -203,29 +209,55 @@ export class PypeServer {
     };
 
     res.json = function (data: Record<string, any>) {
-      this.send(data);
+      if (!this.getHeader("Content-Type")) {
+        this.setHeader("Content-Type", "application/json; charset=utf-8");
+      }
+      this.send(JSON.stringify(data));
       return this;
     };
 
-    res.get = function (field: string): string | number | string[] | undefined {
+    res.get = function (field: string) {
       return this.getHeader(field);
     };
 
     res.set = function (
-      filed: string | Record<string, string>,
+      field: string | Record<string, string>,
       value?: string,
     ) {
-      if (typeof filed === "string") {
-        if (value == undefined)
+      if (typeof field === "string") {
+        if (value === undefined)
           throw new Error("Value is required when field is a string");
 
-        this.setHeader(filed, value);
+        this.setHeader(field, value);
       } else {
-        for (const key in filed) {
-          this.setHeader(key, filed[key]);
+        for (const key in field) {
+          this.setHeader(key, field[key]);
         }
       }
+      return this;
+    };
 
+    res.type = function (value: string) {
+      if (!value) return this;
+
+      let type = value.trim().toLowerCase();
+
+      if (type.includes("/")) {
+        this.setHeader("Content-Type", type);
+        return this;
+      }
+
+      type = type.replace(/^\./, "");
+
+      const mimeType = MIME_TYPES[type];
+
+      let finalType = mimeType || "application/octet-stream";
+
+      if (finalType.startsWith("text/") && !finalType.includes("charset")) {
+        finalType += "; charset=utf-8";
+      }
+
+      this.setHeader("Content-Type", finalType);
       return this;
     };
 

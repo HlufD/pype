@@ -12,9 +12,9 @@ import { NextFunction } from "../types/next-function";
 import { Middleware } from "../types/middleware";
 import { Request } from "../types/request";
 import { Response } from "../types/response";
-import { MIME_TYPES } from "../types/mime-types";
+import { MIME_TYPES } from "../enums/mime-types";
 
-export class PypeServer {
+export class Pype {
   routes: RouteNode;
   pypeMiddlewares: Middleware[];
 

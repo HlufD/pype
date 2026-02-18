@@ -261,7 +261,17 @@ export class Pype {
       return this;
     };
 
-    res.redirect = function () {
+    res.redirect = function (location: string) {
+      if (!location || this.writableEnded) return this;
+
+      this.status(302);
+      this.set("Location", location);
+
+      if (!this.get("Content-Type"))
+        this.set("Content-Type", "text/plain; charset=utf-8");
+
+      this.end(`Found. Redirecting to ${location}`);
+
       return this;
     };
 

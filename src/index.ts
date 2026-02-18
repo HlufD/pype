@@ -14,7 +14,8 @@ const someRouter = new PypeRouter();
 const app = new Pype();
 
 userRouter.get("/users", (eq: Request, res: Response) => {
-  res.json({ users: [{ name: "John" }] });
+  // res.json({ users: [{ name: "John" }] });
+  res.redirect("/some/route");
 });
 
 userRouter.get("/users/:id", (req: Request, res: Response) => {

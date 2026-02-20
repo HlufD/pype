@@ -307,6 +307,14 @@ export class Pype {
       return this;
     };
 
+    res.cookie = function () {
+      return this;
+    };
+
+    res.clearCookie = function () {
+      return this;
+    };
+
     return res;
   }
 }

@@ -7,7 +7,7 @@ export interface Response extends ServerResponse {
 
   send(...args: any[]): void;
 
-  jsonp(...args: any[]): void;
+  jsonp(...args: any[]): void; // 1
 
   sendStatus(...args: any[]): void;
 
@@ -16,15 +16,15 @@ export interface Response extends ServerResponse {
 
   get(field: string): string | number | string[] | undefined;
 
-  type(value: string): this;
+  type(value: string): this; // 2
 
   location(location: string): this;
 
   links(links: Record<string, string>): void;
 
-  vary(...args: any[]): void;
+  vary(...args: any[]): void; // 3
 
-  append(...args: any[]): void;
+  append(...args: any[]): void; // 4
 
   cookie(...args: any[]): this;
 
@@ -32,11 +32,11 @@ export interface Response extends ServerResponse {
 
   redirect(...args: any[]): this;
 
-  format(...args: any[]): void;
+  format(...args: any[]): void; // 5
 
-  attachment(...args: any[]): void;
+  attachment(...args: any[]): void; // 6
 
-  download(...args: any[]): void;
+  download(...args: any[]): void; // 7
 
-  charset(...args: any[]): void;
+  charset(...args: any[]): void; // 8
 }

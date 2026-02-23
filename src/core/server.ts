@@ -344,6 +344,41 @@ export class Pype {
       return this;
     };
 
+    res.vary = function (headers: string) {
+      if (!headers) return this;
+      const existing = this.get("Vary") as string;
+
+      if (existing === "*") return this;
+
+      if (headers.trim() === "*") {
+        this.set("Vary", "*");
+        return this;
+      }
+
+      const uniqueHeaders = new Set<string>();
+
+      if (existing) {
+        existing
+          .split(",")
+          .map((header) => header.trim())
+          .filter(Boolean)
+          .forEach((header) => {
+            uniqueHeaders.add(header.toLowerCase());
+          });
+      }
+
+      headers
+        .split(",")
+        .map((header) => header.trim())
+        .filter(Boolean)
+        .forEach((header) => {
+          uniqueHeaders.add(header.toLowerCase());
+        });
+
+      this.set("Vary", Array.from(uniqueHeaders).join(", "));
+
+      return this;
+    };
     return res;
   }
 }

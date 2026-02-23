@@ -24,7 +24,7 @@ export interface Response extends ServerResponse {
 
   vary(...args: any[]): void;
 
-  append(...args: any[]): void;
+  append(field: string, value: any): this;
 
   cookie(...args: any[]): this;
 

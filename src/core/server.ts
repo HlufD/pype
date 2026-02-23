@@ -317,17 +317,7 @@ export class Pype {
         typeof value === "object" ? JSON.stringify(value) : String(value);
 
       const serialized = serializeCookie(name, val, options);
-
-      const prev = this.getHeader("Set-Cookie");
-
-      if (!prev) {
-        this.setHeader("Set-Cookie", serialized);
-      } else if (Array.isArray(prev)) {
-        this.setHeader("Set-Cookie", [...prev, serialized]);
-      } else {
-        this.setHeader("Set-Cookie", [prev as string, serialized]);
-      }
-
+      this.append("Set-Cookie", serialized);
       return this;
     };
 

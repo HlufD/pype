@@ -340,6 +340,20 @@ export class Pype {
       return this.cookie(name, "", opts);
     };
 
+    res.append = function (field: string, value: any) {
+      const prev = this.get(field);
+
+      if (!prev) {
+        this.set(field, value);
+      } else if (Array.isArray(prev)) {
+        this.setHeader(field, [...prev, value]);
+      } else {
+        this.setHeader(field, [prev as string, value]);
+      }
+
+      return this;
+    };
+
     return res;
   }
 }

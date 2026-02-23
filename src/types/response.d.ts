@@ -22,7 +22,7 @@ export interface Response extends ServerResponse {
 
   links(links: Record<string, string>): void;
 
-  vary(...args: any[]): void;
+  vary(header: string): this;
 
   append(field: string, value: any): this;
 

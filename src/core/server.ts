@@ -394,6 +394,10 @@ export class Pype {
       return this;
     };
 
+    res.format = function () {
+      return this;
+    };
+
     return res;
   }
 }

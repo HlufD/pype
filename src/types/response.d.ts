@@ -30,7 +30,7 @@ export interface Response extends ServerResponse {
 
   redirect(...args: any[]): this;
 
-  format(...args: any[]): this;
+  format(fileName: string): this;
 
   attachment(...args: any[]): void;
 

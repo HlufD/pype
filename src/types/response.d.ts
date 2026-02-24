@@ -14,7 +14,7 @@ export interface Response extends ServerResponse {
 
   get(field: string): string | number | string[] | undefined;
 
-  type(value: string): this; // 2
+  type(value: string): this;
 
   location(location: string): this;
 
@@ -30,11 +30,11 @@ export interface Response extends ServerResponse {
 
   redirect(...args: any[]): this;
 
-  format(...args: any[]): void; // 3
+  format(...args: any[]): this;
 
-  attachment(...args: any[]): void; // 4
+  attachment(...args: any[]): void;
 
-  download(...args: any[]): void; // 5
+  download(...args: any[]): void;
 
-  charset(...args: any[]): void; // 6
+  charset(...args: any[]): void;
 }

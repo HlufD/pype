@@ -379,6 +379,21 @@ export class Pype {
 
       return this;
     };
+
+    res.type = function (extension: string) {
+      if (!extension) return this;
+
+      const ext = extension.toLowerCase().replace(/^\./, "");
+
+      const content_type = MIME_TYPES[ext];
+
+      if (!content_type) return this;
+
+      this.set("Content-Type", content_type);
+
+      return this;
+    };
+
     return res;
   }
 }

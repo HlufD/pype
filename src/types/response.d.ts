@@ -30,11 +30,11 @@ export interface Response extends ServerResponse {
 
   redirect(...args: any[]): this;
 
-  format(fileName: string): this;
+  format(fileName: string): this; // 1
 
-  attachment(...args: any[]): void;
+  attachment(...args: any[]): void; // 2
 
-  download(...args: any[]): void;
+  download(...args: any[]): void; // 3
 
-  charset(...args: any[]): void;
+  charset(...args: any[]): void; // 4
 }

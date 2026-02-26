@@ -394,8 +394,8 @@ export class Pype {
       return this;
     };
 
-    res.format = function () {
-      return this;
+    res.format = function (formats: Record<string, () => any>) {
+      return;
     };
 
     return res;

@@ -30,7 +30,7 @@ export interface Response extends ServerResponse {
 
   redirect(...args: any[]): this;
 
-  format(formats: Record<string, () => any>): this;
+  format(formats: Record<string, () => any>);
 
   attachment(...args: any[]): void; // 2
 

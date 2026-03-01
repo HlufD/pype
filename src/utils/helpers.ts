@@ -1,3 +1,5 @@
+import { CookieOptions } from "../types/cookie-options";
+
 function serializeCookie(
   name: string,
   value: string,

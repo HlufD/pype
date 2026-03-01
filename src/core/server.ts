@@ -14,6 +14,7 @@ import { Request } from "../types/request";
 import { Response } from "../types/response";
 import { MIME_TYPES } from "../enums/mime-types";
 import { serializeCookie } from "../utils/helpers";
+import { CookieOptions } from "../types/cookie-options";
 
 export class Pype {
   routes: RouteNode;

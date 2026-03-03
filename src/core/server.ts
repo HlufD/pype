@@ -153,6 +153,28 @@ export class Pype {
       return this.headers[header.toLowerCase()];
     };
 
+    req.accepts = function (...types: string[]): string | false {
+      const accept = this.get("Accept") as string;
+
+      if (!accept) return types[0] || false;
+
+      const parts = accept.split(",").map((part) => part.trim());
+
+      const acceptedTypes = parts
+        .map((part) => {
+          const [type, q] = part.split(";").map((part) => part.trim());
+          const quality =
+            q && q.split("=")[1] ? parseFloat(q.split("=")[1]) : 1;
+          return { q: quality, type };
+        })
+        .sort((a, b) => b.q - a.q);
+
+      if (acceptedTypes.length > 0) {
+        return acceptedTypes[0].type;
+      }
+      return false;
+    };
+
     return req;
   }
 

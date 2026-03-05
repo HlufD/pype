@@ -40,4 +40,24 @@ function serializeCookie(
   return cookie;
 }
 
-export { serializeCookie };
+function parseAcceptHeader(header: string) {
+  const types = header.split(",").map((type) => type.trim());
+  return types
+    .map((type) => {
+      let q = 1.0;
+      const [mime, priority] = type.split(";");
+      if (priority && priority.trim().startsWith("q=")) {
+        q = parseFloat(priority.trim().substring(2));
+      }
+      return { mime: mime.trim(), q };
+    })
+    .sort((a, b) => b.q - a.q);
+}
+
+console.log(
+  parseAcceptHeader(
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+  ),
+);
+
+export { serializeCookie, parseAcceptHeader };

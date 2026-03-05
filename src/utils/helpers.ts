@@ -54,10 +54,19 @@ function parseAcceptHeader(header: string) {
     .sort((a, b) => b.q - a.q);
 }
 
-console.log(
-  parseAcceptHeader(
-    "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-  ),
-);
+function matchTypes(clientType: string, serverType: string): boolean {
+  if (clientType === "*/*") return true;
 
-export { serializeCookie, parseAcceptHeader };
+  const [clientMainType, clientSub] = clientType.split("/");
+  const [serverMainType, serverSub] = serverType.split("/");
+
+  if (
+    clientMainType === serverMainType &&
+    (clientSub === serverSub || clientSub === "*")
+  )
+    return true;
+
+  return false;
+}
+
+export { serializeCookie, parseAcceptHeader, matchTypes };

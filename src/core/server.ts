@@ -13,7 +13,11 @@ import { Middleware } from "../types/middleware";
 import { Request } from "../types/request";
 import { Response } from "../types/response";
 import { MIME_TYPES } from "../enums/mime-types";
-import { serializeCookie } from "../utils/helpers";
+import {
+  matchTypes,
+  parseAcceptHeader,
+  serializeCookie,
+} from "../utils/helpers";
 import { CookieOptions } from "../types/cookie-options";
 
 export class Pype {
@@ -153,7 +157,15 @@ export class Pype {
       return this.headers[header.toLowerCase()];
     };
 
-    req.accepts = function (...types: string[]): string | false {
+    req.accepts = function (...serverSupportedTypes: string[]): string | false {
+      const acceptHeader = this.get("Accept") as string;
+      const parsedTypes = parseAcceptHeader(acceptHeader);
+
+      for (const { mime } of parsedTypes) {
+        for (const supportedType of serverSupportedTypes) {
+          if (matchTypes(mime, supportedType)) return supportedType;
+        }
+      }
       return false;
     };
 

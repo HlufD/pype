@@ -1,6 +1,9 @@
 import { ServerResponse } from "node:http";
+import { Request } from "./request";
 
 export interface Response extends ServerResponse {
+  req: Request;
+
   status(code: number): this;
 
   json(data: Record<string, any>): this;

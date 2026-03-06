@@ -1,6 +1,9 @@
 import { IncomingMessage } from "node:http";
+import { Response } from "./response";
 
 export interface Request extends IncomingMessage {
+  res: Response;
+
   params: Record<string, string>;
 
   query?: Record<string, string | string[]>;

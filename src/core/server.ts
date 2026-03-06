@@ -35,8 +35,12 @@ export class Pype {
 
   public listen(port: number, callback?: () => void) {
     const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-      const request = this.decorateRequest(req as Request);
-      const response = this.decorateResponse(res as Response);
+      const request = this.decorateRequest(req as unknown as Request);
+      const response = this.decorateResponse(res as unknown as Response);
+
+      request.res = response;
+      response.req = request;
+
       this.handleRequest(request, response);
     });
     server.listen(port, callback);
@@ -412,7 +416,35 @@ export class Pype {
     };
 
     res.format = function (formats: Record<string, () => any>) {
-      return;
+      const defaultHandler = formats.default;
+      const normalized: Record<string, () => any> = {};
+
+      for (const key in formats) {
+        if (key === "default") continue;
+
+        let mime = key;
+
+        if (!key.includes("/")) {
+          const ext = key.replace(/^\./, "");
+          mime = MIME_TYPES[ext] || key;
+        }
+
+        normalized[mime] = formats[key];
+      }
+
+      const types = Object.keys(normalized);
+      const match = this.req.accepts(...types);
+
+      if (match) {
+        this.type(match);
+        return normalized[match]();
+      }
+
+      if (defaultHandler) {
+        return defaultHandler();
+      }
+
+      return this.status(406).send("Not Acceptable");
     };
 
     return res;

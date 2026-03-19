@@ -35,7 +35,7 @@ app.use("/api", userRouter);
 app.use("/", someRouter);
 
 app.use("/some", (req: Request, res: Response, next: NextFunction) => {
-  console.log("This is from middleware 2");
+  // console.log("This is from middleware 2");
   next();
 });
 

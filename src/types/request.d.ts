@@ -44,7 +44,7 @@ export interface Request extends IncomingMessage {
 
   accepts(...types: string[]): string | false;
 
-  acceptsCharsets(...charsets: string[]): string | false;
+  acceptsCharset(...charset: string[]): string | false;
 
   acceptsEncodings(...encodings: string[]): string | false;
 

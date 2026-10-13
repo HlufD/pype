@@ -1,4 +1,4 @@
-# pype-router
+# Pype
 
 [![CI](https://github.com/HlufD/pipe-router/actions/workflows/ci.yml/badge.svg)](https://github.com/HlufD/pipe-router/actions/workflows/ci.yml)
 
@@ -42,7 +42,7 @@ a radix tree router and no runtime dependencies.
 ## Installation
 
 ```sh
-npm install pype-router
+npm install pyper-web
 ```
 
 Requires Node.js 22 or later. Works from CommonJS (`require`), ES modules
@@ -51,7 +51,7 @@ Requires Node.js 22 or later. Works from CommonJS (`require`), ES modules
 ## Quick start
 
 ```ts
-import { ErrorMiddleware, Pype, PypeRouter, json } from "pype-router";
+import { ErrorMiddleware, Pype, PypeRouter, json } from "pyper-web";
 
 const app = new Pype();
 const api = new PypeRouter();
@@ -206,7 +206,7 @@ app.get("/explicit", (req, res, next) => {
 Error middleware has exactly four parameters and is usually registered last:
 
 ```ts
-import { ErrorMiddleware } from "pype-router";
+import { ErrorMiddleware } from "pyper-web";
 
 const onError: ErrorMiddleware = (err, req, res, next) => {
   if (res.headersSent) return next(err);
@@ -237,7 +237,7 @@ If no error middleware handles an error, the built-in final handler responds:
 ### Pype (application)
 
 ```ts
-import { Pype } from "pype-router";
+import { Pype } from "pyper-web";
 
 const app = new Pype();
 const app = new Pype({ "trust proxy": "loopback", "json spaces": 2 });
@@ -343,7 +343,7 @@ whether it is truthy or falsy.
 A router groups middleware and routes so they can be mounted on a path.
 
 ```ts
-import { PypeRouter } from "pype-router";
+import { PypeRouter } from "pyper-web";
 
 const users = new PypeRouter();
 
@@ -725,7 +725,7 @@ Pype includes four body parsers, equivalent to `express.json()`,
 `express.urlencoded()`, `express.text()` and `express.raw()`:
 
 ```ts
-import { json, raw, text, urlencoded } from "pype-router";
+import { json, raw, text, urlencoded } from "pyper-web";
 
 app.use(json());
 app.use(urlencoded());
@@ -799,7 +799,7 @@ app.set("trust proxy", ["loopback", "10.0.0.0/8"]);
 
 ### TypeScript types
 
-Exported from `pype-router`:
+Exported from `pyper-web`:
 
 | Export                | Description |
 | --------------------- | ----------- |
@@ -875,7 +875,7 @@ types.
 ### A JSON API with validation and errors
 
 ```ts
-import { ErrorMiddleware, Pype, PypeRouter, Request, Response, json } from "pype-router";
+import { ErrorMiddleware, Pype, PypeRouter, Request, Response, json } from "pyper-web";
 
 class HttpError extends Error {
   constructor(public status: number, message: string) {
@@ -917,7 +917,7 @@ app.listen(3000);
 ### Authentication on part of the app
 
 ```ts
-import { NextFunction, Request, Response } from "pype-router";
+import { NextFunction, Request, Response } from "pyper-web";
 
 const requireUser = (req: Request, res: Response, next: NextFunction) => {
   if (!req.get("Authorization")) return res.sendStatus(401);
@@ -969,7 +969,7 @@ const router = express.Router();
 app.use(express.json());
 
 // after
-import { Pype, PypeRouter, json } from "pype-router";
+import { Pype, PypeRouter, json } from "pyper-web";
 const app = new Pype();
 const router = new PypeRouter();
 app.use(json());

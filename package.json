@@ -1,5 +1,5 @@
 {
-  "name": "pype",
+  "name": "pyper-web",
   "version": "0.1.0",
   "description": "Express 5 compatible web framework for Node.js with a radix tree router",
   "keywords": [

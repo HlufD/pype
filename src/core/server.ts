@@ -369,6 +369,11 @@ export class Pype {
   /**
    * Gives requests from `http.createServer(app.handler)` the Pype prototypes
    * and resets per-request state, like Express does.
+   *
+   * Duplicate slashes are collapsed in `req.path` and `req.url` here, once,
+   * so path-scoped middleware sees the same path the router matches.
+   * Otherwise `//admin/secret` could reach an `/admin/secret` route without
+   * running middleware mounted on `/admin`. `req.originalUrl` keeps the raw URL.
    */
   private prepare(rawReq: IncomingMessage, rawRes: ServerResponse) {
     if (!(rawReq instanceof Request))
@@ -380,13 +385,17 @@ export class Pype {
     const res = rawRes as Response;
     const url = req.url || "/";
     const queryStart = url.indexOf("?");
+    const rawPath = queryStart === -1 ? url : url.slice(0, queryStart);
+    const path = rawPath.includes("//") ? rawPath.replace(/\/{2,}/g, "/") : rawPath;
 
     req.app = this;
     res.app = this;
     req.res = res;
     req.originalUrl = url;
-    req.path = queryStart === -1 ? url : url.slice(0, queryStart);
-    req.query = queryStart === -1 ? {} : parseQuery(url.slice(queryStart + 1));
+    req.path = path;
+    req.url = path === rawPath ? url : path + url.slice(rawPath.length);
+    req.query =
+      queryStart === -1 ? Object.create(null) : parseQuery(url.slice(queryStart + 1));
     req.baseUrl = "";
     req.params = {};
     res.locals = res.locals || {};

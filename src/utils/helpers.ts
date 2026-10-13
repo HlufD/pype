@@ -3,20 +3,56 @@ import { IncomingHttpHeaders, OutgoingHttpHeaders } from "http";
 import { CookieOptions } from "../types/cookie-options";
 import { MIME_TYPES } from "../enums/mime-types";
 
+/** RFC 6265 cookie name: an HTTP token. */
+const COOKIE_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+/** RFC 6265 cookie value, after encoding. */
+const COOKIE_VALUE = /^[\x21\x23-\x2b\x2d-\x3a\x3c-\x5b\x5d-\x7e]*$/;
+
+/** Attribute values such as Domain and Path: printable, without `;`. */
+const COOKIE_ATTRIBUTE = /^[\x20-\x3a\x3c-\x7e]*$/;
+
 /**
  * Builds a `Set-Cookie` header value.
  *
  * @param name - Cookie name.
  * @param value - Cookie value, encoded with `options.encode`.
  * @param options - Cookie attributes.
+ * @throws TypeError when the name, encoded value, domain or path contains
+ * characters that would break or inject into the header.
  */
 function serializeCookie(
   name: string,
   value: string,
   options: CookieOptions = {},
 ) {
+  if (!COOKIE_NAME.test(name)) {
+    throw new TypeError(`Invalid cookie name: ${JSON.stringify(name)}`);
+  }
+
   const encode = options.encode || encodeURIComponent;
-  let cookie = `${name}=${encode(value)}`;
+  const encoded = encode(value);
+
+  if (!COOKIE_VALUE.test(encoded)) {
+    throw new TypeError(`Invalid cookie value for ${name}`);
+  }
+
+  for (const attribute of ["domain", "path"] as const) {
+    const attributeValue = options[attribute];
+    if (attributeValue !== undefined && !COOKIE_ATTRIBUTE.test(attributeValue)) {
+      throw new TypeError(`Invalid cookie ${attribute}: ${JSON.stringify(attributeValue)}`);
+    }
+  }
+
+  if (options.maxAge != null && !Number.isFinite(options.maxAge)) {
+    throw new TypeError("Cookie maxAge must be a finite number");
+  }
+
+  if (options.expires && Number.isNaN(options.expires.getTime())) {
+    throw new TypeError("Cookie expires must be a valid date");
+  }
+
+  let cookie = `${name}=${encoded}`;
 
   if (options.maxAge != null) {
     const maxAge = Math.floor(options.maxAge / 1000);
@@ -445,10 +481,13 @@ export {
 /**
  * Parses a query string. Repeated keys become arrays.
  *
+ * The result has no prototype, like Node's `querystring.parse`, so keys such
+ * as `__proto__` or `toString` are plain data and can't change the object.
+ *
  * @param search - The query string without the leading `?`.
  */
 function parseQuery(search: string): Record<string, string | string[]> {
-  const query: Record<string, string | string[]> = {};
+  const query: Record<string, string | string[]> = Object.create(null);
 
   for (const [key, value] of new URLSearchParams(search)) {
     const existing = query[key];

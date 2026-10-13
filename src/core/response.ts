@@ -1,5 +1,6 @@
 import { ServerResponse, STATUS_CODES } from "http";
 import { createReadStream, stat } from "fs";
+import { pipeline } from "stream";
 import { basename, extname, isAbsolute, join, resolve, sep } from "path";
 import type { Request } from "./request";
 import type { Pype } from "./server";
@@ -439,7 +440,8 @@ export class Response extends ServerResponse<Request> {
    * Without `root` the path must be absolute. With `root`, paths containing
    * `..` are rejected. Supports single byte ranges and conditional GETs.
    * Without a callback, errors are answered with 404 for missing files and
-   * the matching status otherwise.
+   * the matching status otherwise. The file stream is closed when the client
+   * disconnects, and the callback then receives the premature-close error.
    *
    * @param path - File path.
    * @param options - Transfer options, or the callback.
@@ -524,15 +526,9 @@ export class Response extends ServerResponse<Request> {
         return done();
       }
 
-      const stream = createReadStream(resolved, { start, end });
-
-      stream.on("error", (streamError) => {
-        stream.destroy();
-        done(streamError);
-      });
-
-      this.once("finish", () => done());
-      stream.pipe(this);
+      pipeline(createReadStream(resolved, { start, end }), this, (streamError) =>
+        done(streamError ?? undefined),
+      );
     });
   }
 

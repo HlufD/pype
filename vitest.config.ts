@@ -9,6 +9,14 @@ export default defineConfig({
         include: ['tests/**/*.test.ts'],
         coverage: {
             reporter: ['text', 'json', 'html'],
+            include: ['src/**/*.ts'],
+            exclude: ['src/**/*.d.ts', 'src/index.ts', 'src/types/**'],
+            thresholds: {
+                statements: 95,
+                branches: 90,
+                functions: 95,
+                lines: 95,
+            },
         },
     },
 })

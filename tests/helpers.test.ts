@@ -1,0 +1,160 @@
+import { describe, expect, it } from "vitest";
+import { sign } from "cookie-signature";
+import {
+  contentDisposition,
+  contentType,
+  escapeHtml,
+  generateETag,
+  isFresh,
+  matchContentType,
+  matchLanguage,
+  matchMediaType,
+  matchToken,
+  negotiate,
+  parseQuery,
+  parseRange,
+  serializeCookie,
+  signCookie,
+} from "../src/utils/helpers";
+
+describe("serializeCookie", () => {
+  it("rejects values the encoder leaves unsafe", () => {
+    expect(() => serializeCookie("a", "x;y", { encode: (v) => v })).toThrow("Invalid cookie value");
+  });
+
+  it("rejects invalid maxAge and expires", () => {
+    expect(() => serializeCookie("a", "1", { maxAge: Infinity })).toThrow("finite");
+    expect(() => serializeCookie("a", "1", { expires: new Date("nope") })).toThrow("valid date");
+  });
+
+  it("rejects attributes that would inject into the header", () => {
+    expect(() => serializeCookie("a", "1", { domain: "x.com; Secure" })).toThrow("domain");
+    expect(() => serializeCookie("a", "1", { path: "/\r\nX: y" })).toThrow("path");
+  });
+});
+
+describe("signCookie", () => {
+  it("matches the cookie-signature package", () => {
+    for (const value of ["hello", "", "j:{\"a\":1}", "ünïcode"]) {
+      expect(signCookie(value, "secret")).toBe(sign(value, "secret"));
+    }
+  });
+});
+
+describe("content negotiation", () => {
+  it("matchers rank specificity", () => {
+    expect(matchMediaType("*/*", "text/html")).toBe(0);
+    expect(matchMediaType("text/*", "text/html")).toBe(1);
+    expect(matchMediaType("text/html", "text/html; level=1")).toBe(2);
+    expect(matchMediaType("text/plain", "text/html")).toBe(-1);
+    expect(matchToken("*", "gzip")).toBe(0);
+    expect(matchToken("br", "gzip")).toBe(-1);
+    expect(matchLanguage("*", "en")).toBe(0);
+    expect(matchLanguage("en-us", "en-us")).toBe(2);
+    expect(matchLanguage("en", "en-gb")).toBe(1);
+    expect(matchLanguage("fr", "en")).toBe(-1);
+  });
+
+  it("negotiate prefers the most specific preference and keeps client order", () => {
+    expect(negotiate("text/*;q=0.5, text/html", ["text/plain", "text/html"], matchMediaType)).toEqual([
+      "text/html",
+      "text/plain",
+    ]);
+    expect(negotiate("*/*, text/html;q=0", ["text/html", "image/png"], matchMediaType)).toEqual([
+      "image/png",
+    ]);
+    expect(negotiate("a;q=bad", ["a"], matchToken)).toEqual([]);
+  });
+
+  it("negotiate uses defaultQ for unmentioned offers", () => {
+    expect(negotiate("gzip", ["identity", "br"], matchToken, (o) => (o === "identity" ? 0.5 : undefined))).toEqual([
+      "identity",
+    ]);
+  });
+});
+
+describe("content types", () => {
+  it("contentType adds charsets where Express does", () => {
+    expect(contentType("json")).toBe("application/json; charset=utf-8");
+    expect(contentType("application/ld+json")).toBe("application/ld+json; charset=utf-8");
+    expect(contentType("png")).toBe("image/png");
+    expect(contentType("text/html; charset=latin1")).toBe("text/html; charset=latin1");
+    expect(contentType("unknownext")).toBe("unknownext");
+  });
+
+  it("matchContentType supports extensions, wildcards and suffixes", () => {
+    expect(matchContentType("application/json", "json")).toBe(true);
+    expect(matchContentType("text/csv", "text/*")).toBe(true);
+    expect(matchContentType("application/vnd.api+json", "+json")).toBe(true);
+    expect(matchContentType("application/vnd.api+json", "application/*+json")).toBe(true);
+    expect(matchContentType("application/xml", "+json")).toBe(false);
+    expect(matchContentType("text/plain", "image/*")).toBe(false);
+    expect(matchContentType("invalid", "text/plain")).toBe(false);
+  });
+});
+
+describe("parseRange", () => {
+  it("returns -2 for malformed and -1 for unsatisfiable headers", () => {
+    expect(parseRange(100, "bytes")).toBe(-2);
+    expect(parseRange(100, "bytes=200-300")).toBe(-1);
+    expect(parseRange(100, "bytes=50-10")).toBe(-1);
+  });
+
+  it("parses open-ended and suffix ranges, clamping to the size", () => {
+    expect([...(parseRange(100, "bytes=90-") as any)]).toEqual([{ start: 90, end: 99 }]);
+    expect([...(parseRange(100, "bytes=-10") as any)]).toEqual([{ start: 90, end: 99 }]);
+    expect([...(parseRange(100, "bytes=0-500") as any)]).toEqual([{ start: 0, end: 99 }]);
+  });
+
+  it("combines overlapping and adjacent ranges", () => {
+    const ranges = parseRange(100, "bytes=20-30, 0-10, 11-15, 25-40", { combine: true }) as any;
+    expect(ranges.type).toBe("bytes");
+    expect([...ranges]).toEqual([
+      { start: 0, end: 15 },
+      { start: 20, end: 40 },
+    ]);
+  });
+});
+
+describe("isFresh", () => {
+  const lastModified = "Mon, 01 Jan 2024 00:00:00 GMT";
+
+  it("is false without conditional headers or response validators", () => {
+    expect(isFresh({}, { etag: '"a"' })).toBe(false);
+    expect(isFresh({ "if-none-match": '"a"' }, {})).toBe(false);
+    expect(isFresh({ "if-modified-since": lastModified }, {})).toBe(false);
+  });
+
+  it("compares strong and weak ETags", () => {
+    expect(isFresh({ "if-none-match": '"a", "b"' }, { etag: '"b"' })).toBe(true);
+    expect(isFresh({ "if-none-match": 'W/"a"' }, { etag: '"a"' })).toBe(true);
+    expect(isFresh({ "if-none-match": '"a"' }, { etag: 'W/"a"' })).toBe(true);
+    expect(isFresh({ "if-none-match": '"x"' }, { etag: '"a"' })).toBe(false);
+    expect(isFresh({ "if-none-match": "*" }, { etag: '"a"' })).toBe(true);
+  });
+
+  it("compares modification dates", () => {
+    const later = "Tue, 02 Jan 2024 00:00:00 GMT";
+    expect(isFresh({ "if-modified-since": later }, { "last-modified": lastModified })).toBe(true);
+    expect(isFresh({ "if-modified-since": lastModified }, { "last-modified": later })).toBe(false);
+  });
+});
+
+describe("other helpers", () => {
+  it("generateETag handles empty bodies and buffers", () => {
+    expect(generateETag("")).toBe('W/"0-2jmj7l5rSw0yVb/vlWAYkK/YBwk"');
+    expect(generateETag(Buffer.from("abc"))).toBe(generateETag("abc"));
+  });
+
+  it("escapeHtml escapes every special character", () => {
+    expect(escapeHtml(`<a href="x">'&'</a>`)).toBe("&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;");
+  });
+
+  it("contentDisposition escapes quotes and backslashes", () => {
+    expect(contentDisposition('a"b\\c.txt')).toBe('attachment; filename="a\\"b\\\\c.txt"');
+  });
+
+  it("parseQuery collects three or more repeated keys", () => {
+    expect(parseQuery("a=1&a=2&a=3").a).toEqual(["1", "2", "3"]);
+  });
+});

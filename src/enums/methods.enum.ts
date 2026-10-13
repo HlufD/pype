@@ -1,3 +1,4 @@
+/** HTTP methods supported by the router, in lower case. */
 export enum HTTP_METHODS {
     GET = "get",
     POST = "post",

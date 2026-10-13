@@ -1,3 +1,4 @@
+/** MIME types by file extension. */
 export const MIME_TYPES: Record<string, string> = {
   html: "text/html",
   htm: "text/html",

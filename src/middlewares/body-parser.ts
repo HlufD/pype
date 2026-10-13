@@ -2,22 +2,29 @@ import { Middleware } from "../types/middleware";
 import { Request } from "../core/request";
 import { parseQuery } from "../utils/helpers";
 
+/** Options shared by all body parsers. */
 export interface BodyParserOptions {
-  // Max body size in bytes, or a string like "100kb" / "1mb". Default "100kb".
+  /** Max body size in bytes, or a string like `"100kb"` or `"1mb"`. Default `"100kb"`. */
   limit?: number | string;
-  // Content types to parse, or a predicate. Defaults depend on the parser.
+  /** Content types to parse, or a predicate. Defaults depend on the parser. */
   type?: string | string[] | ((req: Request) => boolean);
 }
 
+/** Options for {@link json}. */
 export interface JsonOptions extends BodyParserOptions {
-  // Only accept objects and arrays (default true).
+  /** Only accept objects and arrays. Default `true`. */
   strict?: boolean;
 }
 
-// Shaped like http-errors so error middleware can read status/expose.
+/** Body parsing error, shaped like `http-errors` so error middleware can read `status` and `expose`. */
 class BodyParseError extends Error {
   expose = true;
 
+  /**
+   * @param status - HTTP status code, 400, 413 or 415.
+   * @param message - Error message, exposed to the client.
+   * @param type - Machine-readable error type, same values as `body-parser`.
+   */
   constructor(
     public status: number,
     message: string,
@@ -30,6 +37,7 @@ class BodyParseError extends Error {
   statusCode: number;
 }
 
+/** Multipliers for the units accepted by {@link parseBytes}. */
 const UNITS: Record<string, number> = {
   b: 1,
   kb: 1024,
@@ -37,6 +45,11 @@ const UNITS: Record<string, number> = {
   gb: 1024 ** 3,
 };
 
+/**
+ * Converts a size limit like `"100kb"` to bytes.
+ *
+ * @throws When the string isn't a number with an optional b/kb/mb/gb unit.
+ */
 function parseBytes(limit: number | string): number {
   if (typeof limit === "number") return limit;
 
@@ -46,6 +59,12 @@ function parseBytes(limit: number | string): number {
   return Math.floor(parseFloat(match[1]) * UNITS[(match[2] || "b").toLowerCase()]);
 }
 
+/**
+ * Reads the whole request body.
+ *
+ * @param limit - Max body size in bytes.
+ * @returns The body, or rejects with a 413 error when it exceeds `limit`.
+ */
 function readBody(req: Request, limit: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const declared = Number(req.headers["content-length"]);
@@ -77,6 +96,15 @@ function readBody(req: Request, limit: number): Promise<Buffer> {
   });
 }
 
+/**
+ * Creates a body-parsing middleware. Errors go to `next(err)` so error
+ * middleware can handle them, as with Express's `body-parser`. Requests
+ * whose body was already parsed (`req._body`) are skipped.
+ *
+ * @param defaultType - Content type parsed when `options.type` is not set.
+ * @param options - Parser options.
+ * @param parse - Turns the raw body into `req.body`.
+ */
 function createParser(
   defaultType: string,
   options: BodyParserOptions,
@@ -89,8 +117,6 @@ function createParser(
       ? type
       : (req: Request) => Boolean(req.is(...[type].flat()));
 
-  // Errors go to next(err) so error middleware can handle them, as with
-  // Express's body-parser.
   return async (req, _res, next) => {
     if (req._body || !shouldParse(req)) return next();
 
@@ -124,6 +150,7 @@ function createParser(
   };
 }
 
+/** Parses `application/json` bodies into `req.body`. An empty body becomes `{}`. */
 export function json(options: JsonOptions = {}): Middleware {
   const strict = options.strict ?? true;
 
@@ -139,16 +166,19 @@ export function json(options: JsonOptions = {}): Middleware {
   });
 }
 
+/** Parses `application/x-www-form-urlencoded` bodies. Repeated keys become arrays. */
 export function urlencoded(options: BodyParserOptions = {}): Middleware {
   return createParser("urlencoded", options, (body) =>
     parseQuery(body.toString("utf8")),
   );
 }
 
+/** Reads `text/plain` bodies into `req.body` as a string. */
 export function text(options: BodyParserOptions = {}): Middleware {
   return createParser("text/plain", options, (body) => body.toString("utf8"));
 }
 
+/** Reads `application/octet-stream` bodies into `req.body` as a `Buffer`. */
 export function raw(options: BodyParserOptions = {}): Middleware {
   return createParser("application/octet-stream", options, (body) => body);
 }

@@ -22,20 +22,34 @@ import { Response } from "./response";
 import { parseQuery } from "../utils/helpers";
 import { compileTrust } from "../utils/trust-proxy";
 
+/** App settings, keyed by Express setting names such as `"trust proxy"`. */
 type Settings = Record<string, any>;
 
+/**
+ * An Express-compatible application.
+ *
+ * @example
+ * const app = new Pype();
+ * app.use(json());
+ * app.get("/users/:id", (req, res) => res.json({ id: req.params.id }));
+ * app.listen(3000);
+ */
 export class Pype {
-  // Express-compatible settings, e.g. app.set("trust proxy", "loopback").
+  /** Express-compatible settings, e.g. `app.set("trust proxy", "loopback")`. */
   settings: Settings = {};
+  /** Values shared by the whole app, like Express's `app.locals`. */
   locals: Record<string, any> = {};
 
   private readonly router = new PypeRouter();
   private layers: Layer[] = [];
   private routes = createRouteTable();
-  // trie entry -> every route layer registered for that method and path
+  /** Trie entry to every route layer registered for that method and path. */
   private routeLayers = new Map<AnyHandler[], RouteLayer[]>();
   private compiledVersion = -1;
 
+  /**
+   * @param settings - Initial settings, applied with {@link Pype.set}.
+   */
   constructor(settings: Settings = {}) {
     this.set("env", process.env.NODE_ENV || "development");
     this.set("etag", true);
@@ -47,6 +61,12 @@ export class Pype {
     for (const name in settings) this.set(name, settings[name]);
   }
 
+  /**
+   * Sets a setting. `"trust proxy"` accepts the same values as Express.
+   *
+   * @param name - Setting name, e.g. `"etag"` or `"json spaces"`.
+   * @param value - New value.
+   */
   set(name: string, value: any): this {
     this.settings[name] = value;
     if (name === "trust proxy")
@@ -54,22 +74,33 @@ export class Pype {
     return this;
   }
 
+  /** Sets a setting to `true`. */
   enable(name: string): this {
     return this.set(name, true);
   }
 
+  /** Sets a setting to `false`. */
   disable(name: string): this {
     return this.set(name, false);
   }
 
+  /** Whether a setting is truthy. */
   enabled(name: string): boolean {
     return Boolean(this.settings[name]);
   }
 
+  /** Whether a setting is falsy. */
   disabled(name: string): boolean {
     return !this.settings[name];
   }
 
+  /**
+   * Starts an HTTP server that uses Pype's request and response classes.
+   *
+   * @param port - Port to listen on, `0` picks a free one.
+   * @param callback - Called once the server is listening.
+   * @returns The underlying `http.Server`.
+   */
   listen(port: number, callback?: () => void) {
     this.compile();
 
@@ -80,11 +111,19 @@ export class Pype {
     return server.listen(port, callback);
   }
 
-  // Request listener for http.createServer(app.handler), supertest, etc.
+  /** Request listener for `http.createServer(app.handler)`, supertest, etc. */
   handler = (req: IncomingMessage, res: ServerResponse) => {
     this.handle(req, res);
   };
 
+  /**
+   * Adds middleware, error middleware or routers. With a path, they only run
+   * for that path and below it, and see `req.url`, `req.path` and
+   * `req.baseUrl` relative to it.
+   *
+   * @param path - Optional mount path, defaults to `/`.
+   * @param handlers - Middleware functions, routers, or arrays of them.
+   */
   use(...handlers: Array<Middleware | Middleware[]>): this;
   use(
     path: string,
@@ -99,7 +138,12 @@ export class Pype {
     return this;
   }
 
-  // app.get("setting") reads a setting, app.get(path, ...handlers) adds a route.
+  /**
+   * With one argument, reads a setting. Otherwise adds a GET route.
+   *
+   * @param path - Setting name, or route path such as `/users/:id`.
+   * @param handlers - Handlers or arrays of handlers, run in order.
+   */
   get(setting: string): any;
   get(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
   get(path: string, ...handlers: HandlerParam[]): this;
@@ -109,6 +153,12 @@ export class Pype {
     return this;
   }
 
+  /**
+   * Adds a route for every HTTP method.
+   *
+   * @param path - Route path, e.g. `/users/:id`.
+   * @param handlers - Handlers or arrays of handlers, run in order.
+   */
   all(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
   all(path: string, ...handlers: HandlerParam[]): this;
   all(path: string, ...handlers: HandlerParam[]): this {
@@ -116,6 +166,12 @@ export class Pype {
     return this;
   }
 
+  /**
+   * Adds a POST route.
+   *
+   * @param path - Route path, e.g. `/users/:id`.
+   * @param handlers - Handlers or arrays of handlers, run in order.
+   */
   post(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
   post(path: string, ...handlers: HandlerParam[]): this;
   post(path: string, ...handlers: HandlerParam[]): this {
@@ -123,6 +179,12 @@ export class Pype {
     return this;
   }
 
+  /**
+   * Adds a PUT route.
+   *
+   * @param path - Route path, e.g. `/users/:id`.
+   * @param handlers - Handlers or arrays of handlers, run in order.
+   */
   put(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
   put(path: string, ...handlers: HandlerParam[]): this;
   put(path: string, ...handlers: HandlerParam[]): this {
@@ -130,6 +192,12 @@ export class Pype {
     return this;
   }
 
+  /**
+   * Adds a PATCH route.
+   *
+   * @param path - Route path, e.g. `/users/:id`.
+   * @param handlers - Handlers or arrays of handlers, run in order.
+   */
   patch(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
   patch(path: string, ...handlers: HandlerParam[]): this;
   patch(path: string, ...handlers: HandlerParam[]): this {
@@ -137,6 +205,12 @@ export class Pype {
     return this;
   }
 
+  /**
+   * Adds a DELETE route.
+   *
+   * @param path - Route path, e.g. `/users/:id`.
+   * @param handlers - Handlers or arrays of handlers, run in order.
+   */
   delete(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
   delete(path: string, ...handlers: HandlerParam[]): this;
   delete(path: string, ...handlers: HandlerParam[]): this {
@@ -144,6 +218,12 @@ export class Pype {
     return this;
   }
 
+  /**
+   * Adds a HEAD route.
+   *
+   * @param path - Route path, e.g. `/users/:id`.
+   * @param handlers - Handlers or arrays of handlers, run in order.
+   */
   head(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
   head(path: string, ...handlers: HandlerParam[]): this;
   head(path: string, ...handlers: HandlerParam[]): this {
@@ -151,6 +231,12 @@ export class Pype {
     return this;
   }
 
+  /**
+   * Adds an OPTIONS route.
+   *
+   * @param path - Route path, e.g. `/users/:id`.
+   * @param handlers - Handlers or arrays of handlers, run in order.
+   */
   options(
     path: string,
     ...handlers: Array<RouteHandler | RouteHandler[]>
@@ -161,11 +247,20 @@ export class Pype {
     return this;
   }
 
+  /**
+   * Starts a chainable route definition for one path.
+   *
+   * @example app.route("/users").get(list).post(create)
+   */
   route(path: string) {
     return this.router.route(path);
   }
 
-  // Rebuilds the layer list and route trie when routes or middleware changed.
+  /**
+   * Rebuilds the layer list and route trie when routes or middleware changed.
+   * Express allows several routes with the same method and path, they share
+   * one trie entry and run in registration order.
+   */
   private compile() {
     if (this.compiledVersion === routingVersion()) return;
 
@@ -178,8 +273,6 @@ export class Pype {
       if (layer.kind !== "route") continue;
 
       for (const method of layer.methods) {
-        // Express allows several routes with the same method and path, they
-        // share one trie entry and run in registration order.
         const key = `${method} ${normalizeBase(layer.fullPath) || "/"}`;
         const existing = entries.get(key);
 
@@ -204,6 +297,11 @@ export class Pype {
     this.compiledVersion = routingVersion();
   }
 
+  /**
+   * Runs a request through the layers in registration order. HEAD requests
+   * fall back to GET routes, Node drops the body. `next("router")` skips the
+   * remaining layers of the innermost router of the layer that called it.
+   */
   private handle(rawReq: IncomingMessage, rawRes: ServerResponse) {
     const { req, res } = this.prepare(rawReq, rawRes);
 
@@ -215,7 +313,6 @@ export class Pype {
 
     const method = (req.method || "GET").toLowerCase() as HTTP_METHODS;
 
-    // HEAD requests fall back to GET handlers; Node drops the body.
     const match =
       this.routes.match(req.path, method) ??
       (method === HTTP_METHODS.HEAD
@@ -233,7 +330,6 @@ export class Pype {
       if (err === "route") err = undefined;
 
       if (err === "router") {
-        // leave the innermost router of the layer that called next("router")
         const router = current?.routers[current.routers.length - 1];
         while (
           router &&
@@ -270,8 +366,10 @@ export class Pype {
     next();
   }
 
-  // Gives requests from http.createServer(app.handler) the Pype prototypes
-  // and resets per-request state, like Express does.
+  /**
+   * Gives requests from `http.createServer(app.handler)` the Pype prototypes
+   * and resets per-request state, like Express does.
+   */
   private prepare(rawReq: IncomingMessage, rawRes: ServerResponse) {
     if (!(rawReq instanceof Request))
       Object.setPrototypeOf(rawReq, Request.prototype);
@@ -296,6 +394,11 @@ export class Pype {
     return { req, res };
   }
 
+  /**
+   * Calls a middleware layer. Like Express, the middleware sees `req.url` and
+   * `req.path` relative to its mount path, they are restored when it calls
+   * `next()`.
+   */
   private callMiddleware(
     req: Request,
     res: Response,
@@ -303,8 +406,6 @@ export class Pype {
     err: any,
     next: (err?: any) => void,
   ) {
-    // Like Express, the middleware sees req.url/req.path relative to its
-    // mount path; they are restored when it calls next().
     const { url, path, baseUrl } = req;
     mount(req, layer.path);
 
@@ -318,6 +419,10 @@ export class Pype {
     invoke(layer.handle, err, req, res, done);
   }
 
+  /**
+   * Runs a route's handlers in order. While an error is pending only
+   * four-argument handlers run; `next("route")` leaves the route early.
+   */
   private runRoute(
     req: Request,
     res: Response,
@@ -355,7 +460,11 @@ export class Pype {
     routeNext(err);
   }
 
-  // Runs when nothing handled the request, like Express's finalhandler.
+  /**
+   * Runs when nothing handled the request, like Express's `finalhandler`:
+   * responds 404, or with the error's status, and only exposes the message
+   * of 4xx errors.
+   */
   private finalHandler(req: Request, res: Response, err?: any) {
     if (!err && res.headersSent) return;
 
@@ -385,6 +494,7 @@ export class Pype {
   }
 }
 
+/** Creates the route trie with Express's slash handling. */
 function createRouteTable() {
   return new RouteNode({
     ignoreDuplicateSlashes: true,
@@ -392,8 +502,10 @@ function createRouteTable() {
   });
 }
 
-// Calls a handler (or error handler), routing throws and rejected promises
-// to next(err) like Express 5.
+/**
+ * Calls a handler (or error handler), routing throws and rejected promises
+ * to `next(err)` like Express 5.
+ */
 function invoke(
   handler: AnyHandler,
   err: any,
@@ -416,6 +528,7 @@ function invoke(
   }
 }
 
+/** Wraps `next` so calling it again only logs a warning. */
 function once(fn: (err?: any) => void) {
   let called = false;
   return (err?: any) => {
@@ -428,6 +541,7 @@ function once(fn: (err?: any) => void) {
   };
 }
 
+/** HTTP status of an error, from `status` or `statusCode`, 500 otherwise. */
 function errorStatus(err: any): number {
   const status = err?.status ?? err?.statusCode;
   return typeof status === "number" && status >= 400 && status < 600
@@ -435,19 +549,19 @@ function errorStatus(err: any): number {
     : 500;
 }
 
+/** Collapses repeated slashes and drops trailing ones. */
 function normalizeBase(base: string) {
   return base.replace(/\/{2,}/g, "/").replace(/\/+$/, "");
 }
 
-// "/some" matches "/some" and "/some/...", but not "/something".
+/** `/some` matches `/some` and `/some/...`, but not `/something`. */
 function matchesPrefix(requestPath: string, prefix: string) {
   const base = normalizeBase(prefix);
   if (base === "") return true;
   return requestPath === base || requestPath.startsWith(base + "/");
 }
 
-// Strips `base` from the front of req.url / req.path and appends it to
-// req.baseUrl.
+/** Strips `base` from the front of `req.url` and `req.path` and appends it to `req.baseUrl`. */
 function mount(req: Request, base: string) {
   const prefix = normalizeBase(base);
   if (!prefix) return;

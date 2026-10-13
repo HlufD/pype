@@ -15,21 +15,37 @@ import {
 } from "../utils/helpers";
 import { CookieOptions } from "../types/cookie-options";
 
+/** Options for {@link Response.sendFile} and {@link Response.download}. */
 export interface SendFileOptions {
+  /** Directory relative paths are resolved against; paths may not escape it. */
   root?: string;
+  /** Extra response headers. */
   headers?: Record<string, string>;
+  /** How to treat dotfiles: `"ignore"` (404, default), `"deny"` (403) or `"allow"`. */
   dotfiles?: "allow" | "deny" | "ignore";
+  /** `Cache-Control` max-age in milliseconds. Default 0. */
   maxAge?: number;
+  /** Adds `immutable` to `Cache-Control`. */
   immutable?: boolean;
+  /** Set `Cache-Control`. Default `true`. */
   cacheControl?: boolean;
+  /** Set `Last-Modified`. Default `true`. */
   lastModified?: boolean;
+  /** Set a weak `ETag`. Default `true`. */
   etag?: boolean;
+  /** Support `Range` requests. Default `true`. */
   acceptRanges?: boolean;
 }
 
+/** Called when a file transfer finishes or fails. */
 type SendFileCallback = (error?: Error) => void;
 
+/** Error carrying an HTTP status, used for file transfer failures. */
 class HttpError extends Error {
+  /**
+   * @param status - HTTP status code.
+   * @param message - Defaults to the status code's standard message.
+   */
   constructor(
     public status: number,
     message = STATUS_CODES[status] || String(status),
@@ -38,12 +54,21 @@ class HttpError extends Error {
   }
 }
 
+/** Merges Express response augmentations into {@link Response}. */
 export interface Response extends Express.Response {}
 
+/** Express-compatible response, extends Node's `ServerResponse`. */
 export class Response extends ServerResponse<Request> {
+  /** The app handling the request. */
   app!: Pype;
+  /** Values scoped to this request, e.g. for templates or later middleware. */
   locals: Record<string, any> = {};
 
+  /**
+   * Sets the status code.
+   *
+   * @throws When the code isn't an integer between 100 and 999.
+   */
   status(code: number) {
     if (!Number.isInteger(code)) {
       throw new TypeError(`Invalid status code: ${code}. Must be an integer.`);
@@ -58,12 +83,22 @@ export class Response extends ServerResponse<Request> {
     return this;
   }
 
+  /** Sends the status code with its standard message as a plain-text body. */
   sendStatus(code: number) {
     this.status(code);
     this.type("txt");
     return this.send(STATUS_CODES[code] || String(code));
   }
 
+  /**
+   * Sends a response body.
+   *
+   * Strings default to HTML and Buffers to `application/octet-stream`;
+   * objects, arrays, numbers and booleans are sent as JSON. Strings stay
+   * strings, so Node writes headers and body in one chunk. Sets
+   * `Content-Length` and an `ETag`, answers 304 when the client's copy is
+   * fresh, and drops the body for HEAD, 204, 205 and 304.
+   */
   send(body?: any): this {
     if (this.writableEnded) return this;
 
@@ -81,11 +116,9 @@ export class Response extends ServerResponse<Request> {
     } else if (body === null) {
       chunk = "";
     } else if (body !== undefined) {
-      // objects, arrays, numbers and booleans are sent as JSON
       return this.json(body);
     }
 
-    // Strings stay strings: Node then writes headers and body in one chunk.
     if (chunk !== undefined) {
       const length =
         typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.length;
@@ -117,6 +150,10 @@ export class Response extends ServerResponse<Request> {
     return this;
   }
 
+  /**
+   * Sends any JSON value, using the app's `"json replacer"` and
+   * `"json spaces"` settings.
+   */
   json(data: any): this {
     if (!this.hasHeader("Content-Type"))
       this.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -129,10 +166,18 @@ export class Response extends ServerResponse<Request> {
     return this.send(body === undefined ? "" : body);
   }
 
+  /** Reads a response header. */
   get(field: string) {
     return this.getHeader(field);
   }
 
+  /**
+   * Sets one header, or several from an object. `Content-Type` values get a
+   * utf-8 charset for text and JSON types.
+   *
+   * @throws When `value` is missing for a single header, or `Content-Type`
+   * is given an array.
+   */
   set(field: string | Record<string, string | string[]>, value?: string | string[]) {
     if (typeof field !== "string") {
       for (const key in field) this.set(key, field[key]);
@@ -155,10 +200,15 @@ export class Response extends ServerResponse<Request> {
     return this;
   }
 
+  /** Alias of {@link Response.set}. */
   header(field: string | Record<string, string | string[]>, value?: string | string[]) {
     return this.set(field, value);
   }
 
+  /**
+   * Sets `Content-Type` from a MIME type or an extension such as `"json"`.
+   * Unknown extensions become `application/octet-stream`.
+   */
   type(value: string) {
     if (!value) return this;
 
@@ -170,6 +220,12 @@ export class Response extends ServerResponse<Request> {
     return this.set("Content-Type", type);
   }
 
+  /**
+   * Redirects to `url`, 302 unless a status is given. The URL is encoded and
+   * the body is text or HTML depending on the `Accept` header.
+   *
+   * @throws When no URL is given.
+   */
   redirect(url: string): this;
   redirect(status: number, url: string): this;
   redirect(statusOrUrl: number | string, url?: string) {
@@ -214,6 +270,11 @@ export class Response extends ServerResponse<Request> {
     return this;
   }
 
+  /**
+   * Appends to the `Link` header.
+   *
+   * @example res.links({ next: "/users?page=2", last: "/users?page=5" })
+   */
   links(links: Record<string, string | string[]>) {
     if (!links || typeof links !== "object") {
       return this;
@@ -242,10 +303,16 @@ export class Response extends ServerResponse<Request> {
     return this;
   }
 
+  /** Sets the encoded `Location` header. */
   location(location: string) {
     return this.set("Location", encodeUrl(location));
   }
 
+  /**
+   * Sets a cookie. Objects are stored as `j:` + JSON, like Express.
+   *
+   * @throws When `signed` is set but `cookie-parser` has no secret.
+   */
   cookie(name: string, value: any, options: CookieOptions = {}) {
     let val =
       typeof value === "object" ? `j:${JSON.stringify(value)}` : String(value);
@@ -262,6 +329,7 @@ export class Response extends ServerResponse<Request> {
     return this;
   }
 
+  /** Expires a cookie. Pass the same `path` and `domain` it was set with. */
   clearCookie(name: string, options: CookieOptions = {}) {
     const opts = { ...options, expires: new Date(1) };
     delete opts.maxAge;
@@ -269,6 +337,7 @@ export class Response extends ServerResponse<Request> {
     return this.cookie(name, "", opts);
   }
 
+  /** Adds values to a header, keeping the existing ones. */
   append(field: string, value: string | string[]) {
     const prev = this.get(field);
 
@@ -278,6 +347,7 @@ export class Response extends ServerResponse<Request> {
     return this.set(field, previous.concat(value));
   }
 
+  /** Adds fields to the `Vary` header without duplicates. */
   vary(headers: string) {
     if (!headers) return this;
     const existing = this.get("Vary") as string;
@@ -314,6 +384,12 @@ export class Response extends ServerResponse<Request> {
     return this;
   }
 
+  /**
+   * Runs the handler matching the `Accept` header and sets `Content-Type`
+   * and `Vary: Accept`. Falls back to `default`, otherwise responds 406.
+   *
+   * @param formats - Handlers keyed by MIME type or extension.
+   */
   format(formats: Record<string, () => any>) {
     const defaultHandler = formats.default;
     const normalized: Record<string, () => any> = {};
@@ -348,11 +424,28 @@ export class Response extends ServerResponse<Request> {
     return this.status(406).send("Not Acceptable");
   }
 
+  /**
+   * Marks the response as a download. With a file name, also sets
+   * `Content-Type` from its extension.
+   */
   attachment(filename?: string) {
     if (filename) this.type(extname(filename));
     return this.set("Content-Disposition", contentDisposition(filename && basename(filename)));
   }
 
+  /**
+   * Streams a file.
+   *
+   * Without `root` the path must be absolute. With `root`, paths containing
+   * `..` are rejected. Supports single byte ranges and conditional GETs.
+   * Without a callback, errors are answered with 404 for missing files and
+   * the matching status otherwise.
+   *
+   * @param path - File path.
+   * @param options - Transfer options, or the callback.
+   * @param callback - Called when the transfer finishes or fails.
+   * @throws When `path` is missing, or relative without `root`.
+   */
   sendFile(
     path: string,
     options: SendFileOptions | SendFileCallback = {},
@@ -443,6 +536,14 @@ export class Response extends ServerResponse<Request> {
     });
   }
 
+  /**
+   * Sends a file as an attachment.
+   *
+   * @param path - File path, relative paths resolve against the working directory.
+   * @param filename - Name shown to the user, defaults to the file's name.
+   * @param options - Transfer options, see {@link SendFileOptions}.
+   * @param callback - Called when the transfer finishes or fails.
+   */
   download(
     path: string,
     filename?: string | SendFileOptions | SendFileCallback,
@@ -473,6 +574,12 @@ export class Response extends ServerResponse<Request> {
     );
   }
 
+  /**
+   * Resolves and checks a path for {@link Response.sendFile}.
+   *
+   * @returns The absolute path, or an {@link HttpError} for null bytes (400),
+   * traversal (403) and dotfiles (per `options.dotfiles`).
+   */
   private resolveFilePath(path: string, options: SendFileOptions) {
     if (path.includes("\0")) return new HttpError(400);
 
@@ -504,6 +611,7 @@ export class Response extends ServerResponse<Request> {
     return resolved;
   }
 
+  /** Sets caching and type headers for a file transfer. */
   private setFileHeaders(
     path: string,
     stats: { size: number; mtime: Date },
@@ -537,6 +645,7 @@ export class Response extends ServerResponse<Request> {
   }
 }
 
+/** HTTP status for a file system error: 404 for missing files, 500 otherwise. */
 function errorStatus(error: NodeJS.ErrnoException): number {
   return error.code === "ENOENT" ||
     error.code === "ENAMETOOLONG" ||

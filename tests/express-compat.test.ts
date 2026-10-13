@@ -26,6 +26,7 @@ import { Request } from "../src/core/request";
 import { Response } from "../src/core/response";
 import { NextFunction } from "../src/types/next-function";
 
+/** A response as read by {@link send}. */
 interface Reply {
   status: number;
   headers: IncomingHttpHeaders;
@@ -37,6 +38,11 @@ const servers: Server[] = [];
 const logs: string[] = [];
 const staticRoot = mkdtempSync(join(tmpdir(), "pype-static-"));
 
+/**
+ * Starts `app` on a free port and closes it after the tests.
+ *
+ * @returns The port.
+ */
 function listen(app: Pype): Promise<number> {
   const server = app.listen(0);
   servers.push(server);
@@ -47,6 +53,7 @@ function listen(app: Pype): Promise<number> {
   );
 }
 
+/** Sends a raw HTTP request and buffers the response body. */
 function send(
   port: number,
   path: string,
@@ -69,6 +76,7 @@ function send(
   });
 }
 
+/** Turns a response's `Set-Cookie` headers into a `Cookie` request header. */
 const cookieHeader = (reply: Reply) =>
   (reply.headers["set-cookie"] ?? []).map((c) => c.split(";")[0]).join("; ");
 
@@ -292,7 +300,6 @@ describe("Express pipeline semantics", () => {
       res.json({ env: req.app.get("env"), trust: req.app.enabled("trust proxy") });
     });
 
-    // registered after the routes, so they only run when nothing responded
     app.use((err: any, req: Request, res: Response, next: NextFunction) => {
       if (req.path === "/unhandled") return next(err);
       res.status(err.status ?? 500).json({ handledBy: "error middleware", message: err.message });

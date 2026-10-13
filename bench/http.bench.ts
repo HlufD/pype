@@ -1,15 +1,32 @@
-// End-to-end HTTP benchmark, Pype vs Express: npm run bench
-// Runs from the compiled build, ts-node itself would slow every server down.
+/**
+ * End-to-end HTTP benchmark, bare Node.js vs Pype vs Express: `npm run bench`.
+ *
+ * Runs from the compiled build, since ts-node itself would slow every server
+ * down. Each run is preceded by a one-second warm-up.
+ *
+ * @packageDocumentation
+ */
 import { spawn, ChildProcess } from "child_process";
 import { extname, join } from "path";
 import autocannon from "autocannon";
 import { lookups } from "./routes";
 
+/** Seconds per measured run, override with the `DURATION` env var. */
 const DURATION = Number(process.env.DURATION ?? 5);
+
+/** Concurrent connections per run. */
 const CONNECTIONS = 200;
-// several load-generating threads, so the client isn't the bottleneck
+
+/** Load-generating threads, so the client isn't the bottleneck. */
 const WORKERS = 4;
 
+/**
+ * Starts a benchmark server in a child process.
+ *
+ * @param framework - `"node"`, `"pype"` or `"express"`.
+ * @param port - Port to listen on.
+ * @returns The child process, once the server is listening.
+ */
 function start(framework: string, port: number): Promise<ChildProcess> {
   return new Promise((resolve, reject) => {
     const ext = extname(__filename);
@@ -26,6 +43,11 @@ function start(framework: string, port: number): Promise<ChildProcess> {
   });
 }
 
+/**
+ * Load-tests a URL with autocannon.
+ *
+ * @returns Average requests per second, average latency and error count.
+ */
 async function run(url: string, duration: number) {
   const result = await autocannon({
     url,
@@ -36,6 +58,7 @@ async function run(url: string, duration: number) {
   return { rps: result.requests.average, latency: result.latency.average, errors: result.non2xx + result.errors };
 }
 
+/** Runs every lookup against Pype and Express and prints the speedups. */
 async function main() {
   const servers = {
     node: await start("node", 4100),
@@ -56,7 +79,7 @@ async function main() {
 
     for (const framework of ["pype", "express"] as const) {
       const url = `http://127.0.0.1:${ports[framework]}${path}`;
-      await run(url, 1); // warm up
+      await run(url, 1);
       results[framework] = await run(url, DURATION);
     }
 

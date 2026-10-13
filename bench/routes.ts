@@ -1,9 +1,10 @@
-// A realistic REST API surface (~60 routes), shared by the benchmarks.
+/** Resources that each get list, create, show and history routes. */
 const resources = [
   "users", "posts", "comments", "orders", "products", "invoices",
   "teams", "projects", "issues", "releases", "tags", "webhooks",
 ];
 
+/** A realistic REST API surface (~60 routes), shared by the benchmarks. */
 export const routes: Array<[method: "get" | "post", path: string]> = [
   ["get", "/"],
   ["get", "/health"],
@@ -17,7 +18,7 @@ export const routes: Array<[method: "get" | "post", path: string]> = [
   ["get", "/static/*"],
 ];
 
-// What each benchmark requests.
+/** Paths each benchmark requests, keyed by a description. */
 export const lookups = {
   "static (/health)": "/health",
   "static, last registered (/api/webhooks)": "/api/webhooks",

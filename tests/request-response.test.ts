@@ -11,6 +11,7 @@ import { Response } from "../src/core/response";
 import cookieParser from "cookie-parser";
 import { json, text, urlencoded } from "../src/middlewares/body-parser";
 
+/** A response as read by {@link send}. */
 interface Reply {
   status: number;
   headers: IncomingHttpHeaders;
@@ -23,6 +24,7 @@ let proxiedServer: Server;
 let proxiedPort: number;
 const fileRoot = mkdtempSync(join(tmpdir(), "pype-"));
 
+/** Sends a raw HTTP request to the main test server, or `options.port`. */
 function send(
   path: string,
   options: {
@@ -55,9 +57,15 @@ function send(
   });
 }
 
+/** Creates a route handler that responds with `{ value: pick(req) }`. */
 const reflect = (pick: (req: Request) => unknown) => (req: Request, res: Response) =>
   res.json({ value: pick(req) ?? null });
 
+/**
+ * Starts `app` on a free port.
+ *
+ * @returns The server and its port.
+ */
 function start(app: Pype): Promise<[Server, number]> {
   const s = app.listen(0);
   return new Promise((resolve) =>
@@ -81,7 +89,6 @@ beforeAll(async () => {
     next();
   });
 
-  // request properties and methods
   app.get("/header", reflect((req) => req.header("x-test")));
   app.get("/accepts", reflect((req) => req.accepts("json", "html")));
   app.get("/accepts-list", reflect((req) => req.accepts()));
@@ -130,7 +137,6 @@ beforeAll(async () => {
   });
   app.use("/shop", router);
 
-  // response methods
   app.get("/locals", (req: Request, res: Response) => {
     res.locals.user = "ada";
     res.json({ locals: res.locals, sameApp: req.app === res.app });
@@ -192,6 +198,7 @@ afterAll(() => {
   proxiedServer.close();
 });
 
+/** Reads the `value` field of a {@link reflect} response. */
 const value = (reply: Reply) => JSON.parse(reply.body).value;
 
 describe("Request", () => {

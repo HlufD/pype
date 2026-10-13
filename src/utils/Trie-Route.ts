@@ -1,54 +1,82 @@
 import { HTTP_METHODS } from "../enums/methods.enum";
 import { RouteHandler } from "../types/route-handler";
 
+/** Information about a registered route, exposed as `req.route`. */
 interface RouteMeta {
-  // The path as written in the route definition (relative to its router).
+  /** The path as written in the route definition, relative to its router. */
   path: string;
-  // Where the route's router is mounted, "" for routes on the app itself.
+  /** Where the route's router is mounted, `""` for routes on the app itself. */
   baseUrl: string;
 }
 
+/** Result of a successful {@link RouteNode.match}. */
 interface MatchResult {
+  /** Handlers registered for the matched method and path. */
   handlers: RouteHandler[];
+  /** Decoded route params, `"*"` holds the wildcard capture. */
   params: Record<string, string>;
+  /** Metadata of the matched route. */
   route: RouteMeta;
 }
 
+/** Path normalization options. */
 interface Options {
+  /** Treat `//users///1` like `/users/1`. */
   ignoreDuplicateSlashes?: boolean;
+  /** Treat `/users/` like `/users`. */
   ignoreTrailingSlash?: boolean;
 }
 
+/** What a node stores for one HTTP method. */
 interface RouteEntry {
   handlers: RouteHandler[];
   route: RouteMeta;
 }
 
+/** A piece of a route path: static text, a `:param` or a trailing `*`. */
 type Token =
   | { type: "static"; value: string }
   | { type: "param"; name: string }
   | { type: "wildcard" };
 
-const SLASH = 47; // "/"
+/** Char code of `"/"`. */
+const SLASH = 47;
 
-// A node of the radix tree. Static children are found by the first char code
-// of their prefix (nodes have few children, so a linear scan beats a Map),
-// then one startsWith() checks the whole compressed prefix.
+/**
+ * A node of the radix tree.
+ *
+ * Static children are found by the first char code of their prefix (nodes
+ * have few children, so a linear scan beats a `Map`), then one comparison
+ * checks the whole compressed prefix.
+ */
 class Node {
+  /** The static text this node consumes. */
   public prefix: string;
+  /** First char code of each static child, parallel to `staticChildren`. */
   public childCodes: number[] = [];
+  /** Static children, parallel to `childCodes`. */
   public staticChildren: Node[] = [];
+  /** Child that consumes one `:param` segment. */
   public paramChild: Node | null = null;
+  /** Name of the param consumed by `paramChild`. */
   public paramName: string | null = null;
+  /** Child that consumes the rest of the path. */
   public wildcardChild: Node | null = null;
+  /** Routes ending at this node, keyed by HTTP method. */
   public entries = new Map<string, RouteEntry>();
-  // Builds the params object from the values collected on the way here.
+  /** Builds the params object from the values collected on the way here. */
   public buildParams: ParamsBuilder = buildNoParams;
 
+  /** @param prefix - The static text this node consumes. */
   constructor(prefix = "") {
     this.prefix = prefix;
   }
 
+  /**
+   * Finds the static child whose prefix starts with `code`.
+   *
+   * @param code - Char code of the next character in the path.
+   */
   getChild(code: number): Node | undefined {
     const codes = this.childCodes;
     for (let i = 0; i < codes.length; i++) {
@@ -57,6 +85,12 @@ class Node {
     return undefined;
   }
 
+  /**
+   * Adds or replaces the static child whose prefix starts with `code`.
+   *
+   * @param code - Char code of the child's first prefix character.
+   * @param child - The child node.
+   */
   setChild(code: number, child: Node) {
     const i = this.childCodes.indexOf(code);
     if (i === -1) {
@@ -68,22 +102,38 @@ class Node {
   }
 }
 
-// Radix tree (compressed trie) router. Precedence is static > param >
-// wildcard, with backtracking when a more specific branch fails deeper down.
+/**
+ * Radix tree (compressed trie) router.
+ *
+ * Precedence is static > param > wildcard, with backtracking when a more
+ * specific branch fails deeper down. Fully static paths are also kept in a
+ * hash map, since an exact static match always wins and can skip the tree
+ * walk entirely.
+ */
 class RouteNode {
   private root = new Node();
-  // Fully static paths are also kept in a hash map: an exact static match
-  // always wins, so it can skip the tree walk entirely.
   private staticRoutes = new Map<string, Map<string, RouteEntry>>();
   public config: Options = {
     ignoreDuplicateSlashes: false,
     ignoreTrailingSlash: false,
   };
 
+  /** @param config - Path normalization options. */
   constructor(config: Options) {
     this.config = config;
   }
 
+  /**
+   * Registers a route. An optional last param like `/users/:id?` registers
+   * both `/users` and `/users/:id`.
+   *
+   * @param url - Route path, e.g. `/users/:id` or `/files/*`.
+   * @param method - HTTP method the handlers respond to.
+   * @param handlers - Handlers returned by {@link RouteNode.match}.
+   * @param meta - Route metadata, defaults to `{ path: url, baseUrl: "" }`.
+   * @throws When the path is invalid, already registered for `method`, or
+   * uses a different param name than an existing route at the same position.
+   */
   register(
     url: string,
     method: HTTP_METHODS,
@@ -99,7 +149,6 @@ class RouteNode {
     };
     const entry: RouteEntry = { handlers, route };
 
-    // "/users/:id?" registers "/users" and "/users/:id".
     const optional = /\/:([^/]+)\?$/.exec(path);
     if (optional) {
       const parent = path.slice(0, optional.index) || "/";
@@ -111,6 +160,14 @@ class RouteNode {
     this.insert(path, method, entry);
   }
 
+  /**
+   * Finds the route for a request path.
+   *
+   * @param url - Request path without the query string.
+   * @param method - HTTP method of the request.
+   * @returns The matched handlers, decoded params and route metadata, or
+   * `null` when nothing matches.
+   */
   match(url: string, method: HTTP_METHODS): MatchResult | null {
     const path = this.normalize(url);
 
@@ -131,6 +188,13 @@ class RouteNode {
     };
   }
 
+  /**
+   * Depth-first search below `node`. A wildcard may capture an empty
+   * remainder, so `/files/` matches `/files/*` when trailing slashes are kept.
+   *
+   * @param values - Collects raw param values, popped again on backtracking.
+   * @returns The node holding the route for `method`, or `null`.
+   */
   private find(
     node: Node,
     path: string,
@@ -141,7 +205,6 @@ class RouteNode {
     if (index === path.length) {
       if (node.entries.has(method)) return node;
 
-      // a wildcard may capture an empty remainder: "/files/" for "/files/*"
       const wildcard = node.wildcardChild;
       if (wildcard && wildcard.entries.has(method)) {
         values.push("");
@@ -185,6 +248,11 @@ class RouteNode {
     return null;
   }
 
+  /**
+   * Adds a normalized path to the tree and stores `entry` for `method`.
+   *
+   * @throws On duplicate routes or conflicting param names.
+   */
   private insert(path: string, method: string, entry: RouteEntry) {
     let node = this.root;
     const names: string[] = [];
@@ -226,8 +294,13 @@ class RouteNode {
     }
   }
 
-  // Walks or creates the static prefix `value` below `node`, splitting
-  // existing nodes where prefixes diverge.
+  /**
+   * Walks or creates the static prefix `value` below `node`, splitting
+   * existing nodes where prefixes diverge: adding `/uploads` next to
+   * `/users` turns the node into `/u` with children `sers` and `ploads`.
+   *
+   * @returns The node where `value` ends.
+   */
   private insertStatic(node: Node, value: string): Node {
     while (value.length > 0) {
       const code = value.charCodeAt(0);
@@ -247,7 +320,6 @@ class RouteNode {
       }
 
       if (common < prefix.length) {
-        // split: "/users" + "/uploads" -> "/u" with children "sers", "ploads"
         const parent = new Node(prefix.slice(0, common));
         child.prefix = prefix.slice(common);
         parent.setChild(child.prefix.charCodeAt(0), child);
@@ -263,7 +335,10 @@ class RouteNode {
     return node;
   }
 
-  // "/users/:id/files/*" -> static "/users/", param id, static "/files/", wildcard
+  /**
+   * Splits a path into tokens: `/users/:id/files/*` becomes static
+   * `/users/`, param `id`, static `/files/` and a wildcard.
+   */
   private tokenize(path: string): Token[] {
     const tokens: Token[] = [];
     let staticPart = "";
@@ -291,6 +366,7 @@ class RouteNode {
     return tokens.filter((t) => t.type !== "static" || t.value !== "");
   }
 
+  /** Applies the duplicate and trailing slash options to a path. */
   private normalize(url: string) {
     let path = url;
 
@@ -309,6 +385,12 @@ class RouteNode {
     return path;
   }
 
+  /**
+   * Checks a route path before registration.
+   *
+   * @throws When the path doesn't start with `/`, or an optional param or
+   * wildcard isn't at the end.
+   */
   private validateUrl(url: string) {
     if (!url.startsWith("/")) {
       throw new Error(`Invalid URL: ${url}. URL must start with a '/'`);
@@ -328,16 +410,22 @@ class RouteNode {
   }
 }
 
+/** Creates a route's params object from the raw values of a match. */
 type ParamsBuilder = (
   values: string[],
   decode: (value: string) => string,
 ) => Record<string, string>;
 
+/** Params builder for routes without params. */
 const buildNoParams: ParamsBuilder = () => ({});
 
-// Compiles `(v, d) => ({ "id": d(v[0]), "postId": d(v[1]) })` for a route,
-// so every match creates an object of the same shape instead of adding keys
-// one by one. Names come from route definitions and are JSON-escaped.
+/**
+ * Compiles `(v, d) => ({ "id": d(v[0]), "postId": d(v[1]) })` for a route,
+ * so every match creates an object of the same shape instead of adding keys
+ * one by one. Names come from route definitions and are JSON-escaped.
+ *
+ * @param names - Param names in path order, `"*"` for the wildcard.
+ */
 function compileParamsBuilder(names: string[]): ParamsBuilder {
   if (names.length === 0) return buildNoParams;
 
@@ -348,7 +436,7 @@ function compileParamsBuilder(names: string[]): ParamsBuilder {
   return new Function("v", "d", `return { ${body} };`) as ParamsBuilder;
 }
 
-// Same as path.includes("//"), but cheaper for short strings.
+/** Same as `path.includes("//")`, but cheaper for short strings. */
 function hasDoubleSlash(path: string) {
   for (let i = 1; i < path.length; i++) {
     if (path.charCodeAt(i) === SLASH && path.charCodeAt(i - 1) === SLASH)
@@ -357,20 +445,25 @@ function hasDoubleSlash(path: string) {
   return false;
 }
 
-// Same as path.startsWith(prefix, index); a plain loop optimizes better.
+/**
+ * Same as `path.startsWith(prefix, index)`, a plain loop optimizes better.
+ * Starts at the second character, the child lookup already matched the first.
+ */
 function hasPrefixAt(path: string, prefix: string, index: number) {
   const length = prefix.length;
   if (index + length > path.length) return false;
 
   for (let i = 1; i < length; i++) {
-    // char 0 was already matched by the child lookup
     if (path.charCodeAt(index + i) !== prefix.charCodeAt(i)) return false;
   }
 
   return true;
 }
 
-// Decodes percent-escapes; values without "%" skip decoding entirely.
+/**
+ * Decodes percent-escapes. Values without `%` skip decoding, and malformed
+ * escapes are returned unchanged.
+ */
 function decode(value: string) {
   if (value.indexOf("%") === -1) return value;
   try {
@@ -379,6 +472,5 @@ function decode(value: string) {
     return value;
   }
 }
-
 
 export { RouteNode, Node, Options, RouteMeta, MatchResult };

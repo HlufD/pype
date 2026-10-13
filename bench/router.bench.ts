@@ -1,8 +1,16 @@
-// Router-only microbenchmark: npm run bench:router
+/**
+ * Router-only microbenchmark: `npm run bench:router`.
+ *
+ * Set `ROUTER_MODULE` to a file exporting another `RouteNode` to compare
+ * implementations. Each lookup is warmed up before it is measured.
+ *
+ * @packageDocumentation
+ */
 import { RouteNode } from "../src/utils/Trie-Route";
 import { HTTP_METHODS } from "../src/enums/methods.enum";
 import { lookups, routes } from "./routes";
 
+/** The router implementation under test. */
 const RouterClass = process.env.ROUTER_MODULE
   ? (require(process.env.ROUTER_MODULE).RouteNode as typeof RouteNode)
   : RouteNode;
@@ -10,10 +18,11 @@ const RouterClass = process.env.ROUTER_MODULE
 const router = new RouterClass({ ignoreDuplicateSlashes: true, ignoreTrailingSlash: true });
 for (const [method, path] of routes) router.register(path, method as HTTP_METHODS, [() => {}]);
 
+/** Lookups measured per route. */
 const ITERATIONS = 3_000_000;
 
 for (const [name, url] of Object.entries(lookups)) {
-  for (let i = 0; i < 200_000; i++) router.match(url, HTTP_METHODS.GET); // warm up
+  for (let i = 0; i < 200_000; i++) router.match(url, HTTP_METHODS.GET);
 
   const start = process.hrtime.bigint();
   for (let i = 0; i < ITERATIONS; i++) router.match(url, HTTP_METHODS.GET);

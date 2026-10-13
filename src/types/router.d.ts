@@ -30,4 +30,8 @@ interface RouteDefinition {
   method: HTTP_METHODS;
   handlers: RouteHandler[];
   path: string;
+  // Set by collectRoutes: the path as written in the router, and where the
+  // router is mounted.
+  routePath?: string;
+  baseUrl?: string;
 }

@@ -1,11 +1,59 @@
 import { ServerResponse, STATUS_CODES } from "http";
+import { createReadStream, stat } from "fs";
+import { basename, extname, isAbsolute, join, resolve, sep } from "path";
 import type { Request } from "./request";
+import type { Pype } from "./server";
 import { MIME_TYPES } from "../enums/mime-types";
-import { serializeCookie } from "../utils/helpers";
+import {
+  contentDisposition,
+  contentType,
+  encodeUrl,
+  escapeHtml,
+  generateETag,
+  serializeCookie,
+  signCookie,
+} from "../utils/helpers";
 import { CookieOptions } from "../types/cookie-options";
 
+export interface SendFileOptions {
+  root?: string;
+  headers?: Record<string, string>;
+  dotfiles?: "allow" | "deny" | "ignore";
+  maxAge?: number;
+  immutable?: boolean;
+  cacheControl?: boolean;
+  lastModified?: boolean;
+  etag?: boolean;
+  acceptRanges?: boolean;
+}
+
+type SendFileCallback = (error?: Error) => void;
+
+class HttpError extends Error {
+  constructor(
+    public status: number,
+    message = STATUS_CODES[status] || String(status),
+  ) {
+    super(message);
+  }
+}
+
+export interface Response extends Express.Response {}
+
 export class Response extends ServerResponse<Request> {
+  app!: Pype;
+  locals: Record<string, any> = {};
+
   status(code: number) {
+    if (!Number.isInteger(code)) {
+      throw new TypeError(`Invalid status code: ${code}. Must be an integer.`);
+    }
+    if (code < 100 || code > 999) {
+      throw new RangeError(
+        `Invalid status code: ${code}. Must be between 100 and 999.`,
+      );
+    }
+
     this.statusCode = code;
     return this;
   }
@@ -13,116 +61,160 @@ export class Response extends ServerResponse<Request> {
   sendStatus(code: number) {
     this.status(code);
     this.type("txt");
-    this.send(STATUS_CODES[code] || String(code));
-    return this;
+    return this.send(STATUS_CODES[code] || String(code));
   }
 
-  send(body?: any) {
+  send(body?: any): this {
     if (this.writableEnded) return this;
 
-    if (Buffer.isBuffer(body)) {
-      if (!this.getHeader("Content-Type")) {
-        this.setHeader("Content-Type", "application/octet-stream");
-      }
-    } else if (typeof body === "object" && body !== null) {
-      if (!this.getHeader("Content-Type")) {
-        this.setHeader("Content-Type", "application/json; charset=utf-8");
-      }
-      body = JSON.stringify(body);
-    } else if (typeof body === "number") {
-      this.statusCode = body;
-      body = String(body);
-      if (!this.getHeader("Content-Type")) {
-        this.setHeader("Content-Type", "text/plain; charset=utf-8");
-      }
-    } else if (typeof body === "string") {
-      if (!this.getHeader("Content-Type")) {
-        this.setHeader("Content-Type", "text/html; charset=utf-8");
-      }
+    let chunk: string | Buffer | undefined;
+
+    if (typeof body === "string") {
+      if (!this.get("Content-Type")) this.type("html");
+      chunk = body;
+    } else if (Buffer.isBuffer(body) || ArrayBuffer.isView(body)) {
+      if (!this.get("Content-Type"))
+        this.set("Content-Type", "application/octet-stream");
+      chunk = Buffer.isBuffer(body)
+        ? body
+        : Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+    } else if (body === null) {
+      chunk = "";
+    } else if (body !== undefined) {
+      // objects, arrays, numbers and booleans are sent as JSON
+      return this.json(body);
     }
 
-    if (!this.getHeader("Content-Length") && body != null) {
+    // Strings stay strings: Node then writes headers and body in one chunk.
+    if (chunk !== undefined) {
       const length =
-        typeof body === "string"
-          ? Buffer.byteLength(body)
-          : Buffer.isBuffer(body)
-            ? body.length
-            : 0;
+        typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.length;
+      this.setHeader("Content-Length", length);
 
-      if (length > 0) {
-        this.setHeader("Content-Length", length.toString());
+      if (this.app?.settings.etag !== false && !this.hasHeader("ETag")) {
+        this.setHeader("ETag", generateETag(chunk, length));
       }
     }
 
-    this.end(body);
+    if (this.req.fresh) this.statusCode = 304;
+
+    if (this.statusCode === 204 || this.statusCode === 304) {
+      this.removeHeader("Content-Type");
+      this.removeHeader("Content-Length");
+      this.removeHeader("Transfer-Encoding");
+      chunk = undefined;
+    }
+
+    if (this.statusCode === 205) {
+      this.set("Content-Length", "0");
+      this.removeHeader("Transfer-Encoding");
+      chunk = undefined;
+    }
+
+    if (this.req.method === "HEAD" || chunk === undefined) this.end();
+    else this.end(chunk);
+
     return this;
   }
 
-  json(data: Record<string, any>) {
-    if (!this.getHeader("Content-Type"))
+  json(data: any): this {
+    if (!this.hasHeader("Content-Type"))
       this.setHeader("Content-Type", "application/json; charset=utf-8");
 
-    this.send(data);
-    return this;
+    const body = JSON.stringify(
+      data,
+      this.app?.settings["json replacer"],
+      this.app?.settings["json spaces"],
+    );
+    return this.send(body === undefined ? "" : body);
   }
 
   get(field: string) {
     return this.getHeader(field);
   }
 
-  set(field: string | Record<string, string>, value?: string) {
-    if (typeof field === "string") {
-      if (value === undefined)
-        throw new Error("Value is required when field is a string");
-
-      this.setHeader(field, value);
-    } else {
-      for (const key in field) {
-        this.setHeader(key, field[key]);
-      }
+  set(field: string | Record<string, string | string[]>, value?: string | string[]) {
+    if (typeof field !== "string") {
+      for (const key in field) this.set(key, field[key]);
+      return this;
     }
+
+    if (value === undefined)
+      throw new Error("Value is required when field is a string");
+
+    if (field.toLowerCase() === "content-type") {
+      if (Array.isArray(value))
+        throw new TypeError("Content-Type cannot be set to an Array");
+      value = contentType(value);
+    }
+
+    this.setHeader(
+      field,
+      Array.isArray(value) ? value.map(String) : String(value),
+    );
     return this;
+  }
+
+  header(field: string | Record<string, string | string[]>, value?: string | string[]) {
+    return this.set(field, value);
   }
 
   type(value: string) {
     if (!value) return this;
 
-    let type = value.trim().toLowerCase();
+    const type = value.includes("/")
+      ? value
+      : MIME_TYPES[value.replace(/^\./, "").toLowerCase()] ||
+        "application/octet-stream";
 
-    if (type.includes("/")) {
-      this.setHeader("Content-Type", type);
-      return this;
+    return this.set("Content-Type", type);
+  }
+
+  redirect(url: string): this;
+  redirect(status: number, url: string): this;
+  redirect(statusOrUrl: number | string, url?: string) {
+    if (this.writableEnded) return this;
+
+    let status = 302;
+    let address: string;
+
+    if (typeof statusOrUrl === "number") {
+      status = statusOrUrl;
+      address = url!;
+    } else {
+      address = statusOrUrl;
     }
 
-    type = type.replace(/^\./, "");
+    if (!address) throw new TypeError("res.redirect() requires a url");
 
-    const mimeType = MIME_TYPES[type];
+    this.location(address);
+    const location = this.get("Location") as string;
+    const statusText = STATUS_CODES[status] || String(status);
+    let body = "";
 
-    let finalType = mimeType || "application/octet-stream";
+    this.format({
+      text: () => {
+        body = `${statusText}. Redirecting to ${location}`;
+      },
+      html: () => {
+        const escaped = escapeHtml(location);
+        body = `<!DOCTYPE html><head><title>${statusText}</title></head><body><p>${statusText}. Redirecting to <a href="${escaped}">${escaped}</a></p></body>`;
+      },
+      default: () => {
+        body = "";
+      },
+    });
 
-    if (finalType.startsWith("text/") && !finalType.includes("charset")) {
-      finalType += "; charset=utf-8";
-    }
+    this.status(status);
+    this.set("Content-Length", String(Buffer.byteLength(body)));
 
-    this.setHeader("Content-Type", finalType);
+    if (this.req.method === "HEAD") this.end();
+    else this.end(body);
+
     return this;
   }
 
-  redirect(location: string) {
-    if (!location || this.writableEnded) return this;
-
-    this.status(302);
-    this.set("Location", location);
-
-    if (!this.get("Content-Type"))
-      this.set("Content-Type", "text/plain; charset=utf-8");
-
-    this.end(`Found. Redirecting to ${location}`);
-
-    return this;
-  }
-
-  links(links: Record<string, string>) {
+  links(links: Record<string, string | string[]>) {
     if (!links || typeof links !== "object") {
       return this;
     }
@@ -131,11 +223,12 @@ export class Response extends ServerResponse<Request> {
     const linkValues: string[] = [];
 
     for (const rel in links) {
-      const url = links[rel];
+      const urls = Array.isArray(links[rel]) ? links[rel] : [links[rel]];
 
-      if (typeof url !== "string") continue;
-
-      linkValues.push(`<${url}>; rel="${rel}"`);
+      for (const url of urls) {
+        if (typeof url !== "string") continue;
+        linkValues.push(`<${url}>; rel="${rel}"`);
+      }
     }
 
     const newValue = linkValues.join(", ");
@@ -150,13 +243,19 @@ export class Response extends ServerResponse<Request> {
   }
 
   location(location: string) {
-    this.set("Location", location);
-    return this;
+    return this.set("Location", encodeUrl(location));
   }
 
   cookie(name: string, value: any, options: CookieOptions = {}) {
-    const val =
-      typeof value === "object" ? JSON.stringify(value) : String(value);
+    let val =
+      typeof value === "object" ? `j:${JSON.stringify(value)}` : String(value);
+
+    if (options.signed) {
+      const secret = this.req.secret;
+      if (!secret)
+        throw new Error('cookieParser("secret") required for signed cookies');
+      val = `s:${signCookie(val, secret)}`;
+    }
 
     const serialized = serializeCookie(name, val, options);
     this.append("Set-Cookie", serialized);
@@ -164,26 +263,19 @@ export class Response extends ServerResponse<Request> {
   }
 
   clearCookie(name: string, options: CookieOptions = {}) {
-    const opts = { ...options };
-
-    opts.expires = new Date(1);
-    opts.maxAge = undefined;
+    const opts = { ...options, expires: new Date(1) };
+    delete opts.maxAge;
 
     return this.cookie(name, "", opts);
   }
 
-  append(field: string, value: any) {
+  append(field: string, value: string | string[]) {
     const prev = this.get(field);
 
-    if (!prev) {
-      this.set(field, value);
-    } else if (Array.isArray(prev)) {
-      this.setHeader(field, [...prev, value]);
-    } else {
-      this.setHeader(field, [prev as string, value]);
-    }
+    if (prev === undefined) return this.set(field, value);
 
-    return this;
+    const previous = Array.isArray(prev) ? prev : [String(prev)];
+    return this.set(field, previous.concat(value));
   }
 
   vary(headers: string) {
@@ -240,9 +332,11 @@ export class Response extends ServerResponse<Request> {
     }
 
     const types = Object.keys(normalized);
-    const match = this.req.accepts(...types);
+    if (types.length > 0) this.vary("Accept");
 
-    if (match) {
+    const match = types.length > 0 ? this.req.accepts(...types) : false;
+
+    if (typeof match === "string") {
       this.type(match);
       return normalized[match]();
     }
@@ -253,4 +347,200 @@ export class Response extends ServerResponse<Request> {
 
     return this.status(406).send("Not Acceptable");
   }
+
+  attachment(filename?: string) {
+    if (filename) this.type(extname(filename));
+    return this.set("Content-Disposition", contentDisposition(filename && basename(filename)));
+  }
+
+  sendFile(
+    path: string,
+    options: SendFileOptions | SendFileCallback = {},
+    callback?: SendFileCallback,
+  ) {
+    if (typeof options === "function") {
+      callback = options;
+      options = {};
+    }
+
+    if (!path) throw new TypeError("path argument is required to res.sendFile");
+
+    if (!options.root && !isAbsolute(path)) {
+      throw new TypeError(
+        "path must be absolute or specify root to res.sendFile",
+      );
+    }
+
+    const opts = options;
+    const done = (error?: HttpError | NodeJS.ErrnoException) => {
+      if (callback) return callback(error);
+      if (!error) return;
+
+      const status =
+        error instanceof HttpError ? error.status : errorStatus(error);
+
+      if (!this.headersSent) {
+        this.removeHeader("Content-Disposition");
+        this.sendStatus(status);
+      } else if (!this.writableEnded) {
+        this.destroy(error);
+      }
+    };
+
+    const resolved = this.resolveFilePath(path, opts);
+    if (resolved instanceof HttpError) return done(resolved);
+
+    stat(resolved, (error, stats) => {
+      if (error) return done(error);
+      if (stats.isDirectory()) return done(new HttpError(404));
+
+      this.setFileHeaders(resolved, stats, opts);
+
+      if (this.req.fresh) {
+        this.statusCode = 304;
+        this.removeHeader("Content-Type");
+        this.removeHeader("Content-Length");
+        this.end();
+        return done();
+      }
+
+      let start = 0;
+      let end = Math.max(stats.size - 1, 0);
+
+      if (opts.acceptRanges !== false && stats.size > 0) {
+        const ranges = this.req.range(stats.size, { combine: true });
+
+        if (ranges === -1) {
+          this.set("Content-Range", `bytes */${stats.size}`);
+          return done(new HttpError(416));
+        }
+
+        if (Array.isArray(ranges) && ranges.type === "bytes" && ranges.length === 1) {
+          start = ranges[0].start;
+          end = ranges[0].end;
+          this.statusCode = 206;
+          this.set("Content-Range", `bytes ${start}-${end}/${stats.size}`);
+        }
+      }
+
+      const length = stats.size === 0 ? 0 : end - start + 1;
+      this.set("Content-Length", String(length));
+
+      if (this.req.method === "HEAD" || length === 0) {
+        this.end();
+        return done();
+      }
+
+      const stream = createReadStream(resolved, { start, end });
+
+      stream.on("error", (streamError) => {
+        stream.destroy();
+        done(streamError);
+      });
+
+      this.once("finish", () => done());
+      stream.pipe(this);
+    });
+  }
+
+  download(
+    path: string,
+    filename?: string | SendFileOptions | SendFileCallback,
+    options?: SendFileOptions | SendFileCallback,
+    callback?: SendFileCallback,
+  ) {
+    let name: string | undefined;
+    let opts: SendFileOptions = {};
+
+    for (const arg of [filename, options, callback]) {
+      if (typeof arg === "string") name = arg;
+      else if (typeof arg === "function") callback = arg;
+      else if (arg) opts = arg;
+    }
+
+    const fullPath = opts.root ? path : resolve(path);
+
+    return this.sendFile(
+      fullPath,
+      {
+        ...opts,
+        headers: {
+          ...opts.headers,
+          "Content-Disposition": contentDisposition(name || basename(path)),
+        },
+      },
+      callback,
+    );
+  }
+
+  private resolveFilePath(path: string, options: SendFileOptions) {
+    if (path.includes("\0")) return new HttpError(400);
+
+    const segments = path.split(/[\\/]+/);
+
+    if (options.root && segments.includes("..")) return new HttpError(403);
+
+    const resolved = options.root
+      ? join(resolve(options.root), path)
+      : resolve(path);
+
+    if (options.root) {
+      const root = resolve(options.root);
+      if (resolved !== root && !resolved.startsWith(root + sep))
+        return new HttpError(403);
+    }
+
+    const checked = options.root ? segments : resolved.split(sep);
+    const hasDotfile = checked.some(
+      (segment) => segment.length > 1 && segment.startsWith("."),
+    );
+
+    if (hasDotfile) {
+      const policy = options.dotfiles || "ignore";
+      if (policy === "deny") return new HttpError(403);
+      if (policy === "ignore") return new HttpError(404);
+    }
+
+    return resolved;
+  }
+
+  private setFileHeaders(
+    path: string,
+    stats: { size: number; mtime: Date },
+    options: SendFileOptions,
+  ) {
+    if (options.acceptRanges !== false) this.set("Accept-Ranges", "bytes");
+
+    if (options.cacheControl !== false && !this.get("Cache-Control")) {
+      let cacheControl = `public, max-age=${Math.floor((options.maxAge || 0) / 1000)}`;
+      if (options.immutable) cacheControl += ", immutable";
+      this.set("Cache-Control", cacheControl);
+    }
+
+    if (options.lastModified !== false && !this.get("Last-Modified")) {
+      this.set("Last-Modified", stats.mtime.toUTCString());
+    }
+
+    if (options.etag !== false && !this.get("ETag")) {
+      this.set(
+        "ETag",
+        `W/"${stats.size.toString(16)}-${stats.mtime.getTime().toString(16)}"`,
+      );
+    }
+
+    if (!this.get("Content-Type")) {
+      const mime = MIME_TYPES[extname(path).slice(1).toLowerCase()];
+      this.set("Content-Type", mime || "application/octet-stream");
+    }
+
+    if (options.headers) this.set(options.headers);
+  }
+}
+
+function errorStatus(error: NodeJS.ErrnoException): number {
+  return error.code === "ENOENT" ||
+    error.code === "ENAMETOOLONG" ||
+    error.code === "ENOTDIR"
+    ? 404
+    : 500;
 }

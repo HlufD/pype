@@ -1,8 +1,3 @@
-import { Request } from "./request";
-import { Response } from "./response";
+import { Middleware } from "./middleware";
 
-type RouteHandler = (
-  req: Request,
-  res: Response,
-  next?: NextFunction,
-) => void | Promise<void> | any;
+type RouteHandler = Middleware;

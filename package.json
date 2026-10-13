@@ -9,7 +9,9 @@
     "start": "node dist/examples/app.js",
     "test": "vitest",
     "test:watch": "vitest watch",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "bench": "tsc && node dist/bench/http.bench.js",
+    "bench:router": "tsc && node dist/bench/router.bench.js"
   },
   "keywords": [],
   "author": "",

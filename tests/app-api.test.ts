@@ -6,6 +6,7 @@ import { PypeRouter } from "../src/core/router";
 import { Request } from "../src/core/request";
 import { Response } from "../src/core/response";
 import { NextFunction } from "../src/types/next-function";
+import bodyParser from "body-parser";
 import { json, raw, text, urlencoded } from "../src/middlewares/body-parser";
 import { start, TestServer } from "./support/http";
 
@@ -375,6 +376,24 @@ describe("body parsers", () => {
 
   it("parses a body only once", async () => {
     expect(JSON.parse((await post("/twice", '{"a":1}')).text)).toEqual({ body: { a: 1 } });
+  });
+
+  it("skips bodies already read by the body-parser package", async () => {
+    const app = new Pype();
+    app.post("/both", bodyParser.json(), json(), (req: Request, res: Response) => res.json({ body: req.body }));
+
+    const server = await start(app);
+    const reply = await Promise.race([
+      server.send("/both", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: '{"a":1}',
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+    ]);
+    await server.close();
+
+    expect(reply && JSON.parse(reply.text)).toEqual({ body: { a: 1 } });
   });
 
   it("rejects invalid limits", () => {

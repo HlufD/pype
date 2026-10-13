@@ -99,7 +99,9 @@ function readBody(req: Request, limit: number): Promise<Buffer> {
 /**
  * Creates a body-parsing middleware. Errors go to `next(err)` so error
  * middleware can handle them, as with Express's `body-parser`. Requests
- * whose body was already parsed (`req._body`) are skipped.
+ * whose body was already parsed (`req._body` or `req.body` set) or whose
+ * stream was already read, e.g. by the `body-parser` package, are skipped;
+ * waiting on an ended stream would hang the request.
  *
  * @param defaultType - Content type parsed when `options.type` is not set.
  * @param options - Parser options.
@@ -118,7 +120,9 @@ function createParser(
       : (req: Request) => Boolean(req.is(...[type].flat()));
 
   return async (req, _res, next) => {
-    if (req._body || !shouldParse(req)) return next();
+    if (req._body || req.body !== undefined || req.readableEnded || !shouldParse(req)) {
+      return next();
+    }
 
     const encoding = (
       req.headers["content-encoding"] || "identity"

@@ -55,7 +55,7 @@ export interface RouteLayer {
 export type Layer = MiddlewareLayer | RouteLayer;
 
 /** Chainable route definition returned by {@link PypeRouter.route}. */
-class RouteBuilder {
+export class RouteBuilder {
   /**
    * @param path - Path every route in the chain is registered on.
    * @param router - Router the routes are added to.

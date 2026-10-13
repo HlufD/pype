@@ -45,7 +45,7 @@ beforeAll(async () => {
   app.get("/calls-next", (_req: Request, _res: Response, next) => {
     next!();
   });
-  app.get("/twice", (_req: Request, res: Response, next) => {
+  app.get("/twice", (_req: Request, _res: Response, next) => {
     next!();
     next!();
   });

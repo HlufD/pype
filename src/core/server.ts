@@ -1,6 +1,7 @@
 import {
   IncomingMessage,
   STATUS_CODES,
+  Server,
   ServerResponse,
   createServer,
 } from "http";
@@ -96,19 +97,32 @@ export class Pype {
 
   /**
    * Starts an HTTP server that uses Pype's request and response classes.
+   * Route conflicts are reported here, before the first request arrives.
    *
    * @param port - Port to listen on, `0` picks a free one.
+   * @param hostname - Interface to bind, e.g. `"127.0.0.1"` behind a proxy.
    * @param callback - Called once the server is listening.
-   * @returns The underlying `http.Server`.
+   * @returns The underlying `http.Server`, e.g. for graceful shutdown.
+   * @throws When routes conflict, e.g. different param names at one position.
    */
-  listen(port: number, callback?: () => void) {
+  listen(port: number, callback?: () => void): Server;
+  listen(port: number, hostname: string, callback?: () => void): Server;
+  listen(
+    port: number,
+    hostnameOrCallback?: string | (() => void),
+    callback?: () => void,
+  ): Server {
     this.compile();
 
     const server = createServer(
       { IncomingMessage: Request, ServerResponse: Response },
       this.handler,
     );
-    return server.listen(port, callback);
+
+    if (typeof hostnameOrCallback === "string") {
+      return server.listen(port, hostnameOrCallback, callback);
+    }
+    return server.listen(port, hostnameOrCallback);
   }
 
   /** Request listener for `http.createServer(app.handler)`, supertest, etc. */

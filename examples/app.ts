@@ -1,42 +1,81 @@
-import { PypeRouter } from "../src/core/router";
-import { Pype } from "../src/core/server";
-import { NextFunction } from "../src/types/next-function";
-import { Request } from "../src/types/request";
-import { Response } from "../src/types/response";
+/**
+ * Example API: `npm run dev`, then try `curl localhost:3000/api/users/1`.
+ *
+ * Shows routers, body parsing, route params, error middleware, a JSON 404
+ * and graceful shutdown.
+ *
+ * @packageDocumentation
+ */
+import { json, NextFunction, Pype, PypeRouter, Request, Response } from "../src";
 
-const port = 3000;
+/** In-memory data store for the example. */
+const users = new Map([
+  [1, { id: 1, name: "Ada" }],
+  [2, { id: 2, name: "Linus" }],
+]);
 
-const userRouter = new PypeRouter();
-const someRouter = new PypeRouter();
+/** Error with an HTTP status, picked up by the error middleware. */
+class HttpError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 const app = new Pype();
+const api = new PypeRouter();
 
-userRouter.get("/users", (eq: Request, res: Response) => {
-  res.json({ users: [{ name: "John" }] });
-  res.redirect("/some/route");
-});
-
-userRouter.get("/users/:id", (req: Request, res: Response) => {
-  return res.json({ userId: req.params.id });
-});
-
-someRouter.get("/some/route", (req: Request, res: Response) => {
-  return res.json({ message: "This is from the /some route" });
-});
+app.use(json());
 
 app.use((req: Request, res: Response, next: NextFunction) => {
-  console.log("this is from the middleware.");
+  const started = Date.now();
+  res.on("finish", () => {
+    console.log(`${req.method} ${req.originalUrl} ${res.statusCode} ${Date.now() - started}ms`);
+  });
   next();
 });
 
-app.use("/api", userRouter);
-app.use("/", someRouter);
-
-app.use("/some", (req: Request, res: Response, next: NextFunction) => {
-  console.log("This is from middleware 2");
-  next();
+api.get("/users", (_req: Request, res: Response) => {
+  res.json([...users.values()]);
 });
 
-app.listen(port, () => {
-  console.log(`server is running on port ${port}`);
+api.get("/users/:id", (req: Request, res: Response) => {
+  const user = users.get(Number(req.params.id));
+  if (!user) throw new HttpError(404, `User ${req.params.id} not found`);
+  res.json(user);
 });
+
+api.post("/users", (req: Request, res: Response) => {
+  if (typeof req.body?.name !== "string") throw new HttpError(400, "name is required");
+
+  const user = { id: users.size + 1, name: req.body.name };
+  users.set(user.id, user);
+  res.status(201).location(`/api/users/${user.id}`).json(user);
+});
+
+app.use("/api", api);
+
+app.use((req: Request, res: Response) => {
+  res.status(404).json({ error: `Cannot ${req.method} ${req.path}` });
+});
+
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  const status = err.status ?? 500;
+  res.status(status).json({ error: status < 500 ? err.message : "Internal Server Error" });
+});
+
+const port = Number(process.env.PORT ?? 3000);
+const server = app.listen(port, () => {
+  console.log(`listening on http://localhost:${port}`);
+});
+
+/** Stops accepting connections and exits once in-flight requests finish. */
+function shutdown() {
+  server.close(() => process.exit(0));
+  server.closeIdleConnections();
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

@@ -89,3 +89,6 @@ public
 
 # Mac OS
 .DS_Store
+
+# Development build (benchmarks)
+.build

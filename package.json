@@ -1,26 +1,66 @@
 {
-  "name": "router",
-  "version": "1.0.0",
-  "description": "",
-  "main": "dist/src/index.js",
+  "name": "pype-router",
+  "version": "0.1.0",
+  "description": "Express 5 compatible web framework for Node.js with a radix tree router",
+  "keywords": [
+    "http",
+    "router",
+    "framework",
+    "express",
+    "middleware",
+    "radix-tree",
+    "typescript"
+  ],
+  "homepage": "https://github.com/HlufD/pipe-router#readme",
+  "bugs": {
+    "url": "https://github.com/HlufD/pipe-router/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HlufD/pipe-router.git"
+  },
+  "license": "ISC",
+  "author": "Hluf Abebe",
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "SECURITY.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "dev": "nodemon examples/app.ts",
-    "build": "tsc",
-    "start": "node dist/examples/app.js",
-    "test": "vitest",
+    "dev": "node --watch -r ts-node/register/transpile-only examples/app.ts",
+    "prebuild": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "test:watch": "vitest watch",
     "test:coverage": "vitest run --coverage",
-    "bench": "tsc && node dist/bench/http.bench.js",
-    "bench:router": "tsc && node dist/bench/router.bench.js"
+    "test:fuzz": "FUZZ_RUNS=20000 vitest run tests/fuzz.test.ts --testTimeout=900000",
+    "bench": "tsc && node .build/bench/http.bench.js",
+    "bench:router": "tsc && node .build/bench/router.bench.js",
+    "prepublishOnly": "npm run typecheck && npm run test:coverage && npm run build"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "devDependencies": {
     "@types/autocannon": "^7.12.7",
     "@types/body-parser": "^1.19.6",
     "@types/compression": "^1.8.1",
     "@types/cookie-parser": "^1.4.10",
+    "@types/cookie-signature": "^1.1.2",
     "@types/cors": "^2.8.19",
     "@types/express-session": "^1.19.0",
     "@types/morgan": "^1.9.10",
@@ -32,13 +72,14 @@
     "body-parser": "^2.3.0",
     "compression": "^1.8.2",
     "cookie-parser": "^1.4.7",
+    "cookie-signature": "^1.2.2",
     "cors": "^2.8.6",
     "express-rate-limit": "^8.7.1",
     "express-session": "^1.19.0",
+    "fast-check": "^4.10.2",
     "helmet": "^8.3.0",
     "morgan": "^1.12.1",
     "multer": "^2.4.0",
-    "nodemon": "^3.1.11",
     "serve-static": "^2.2.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3",

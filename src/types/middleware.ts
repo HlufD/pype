@@ -1,6 +1,6 @@
-import { NextFunction } from "./next-function";
-import { Request } from "./request";
-import { Response } from "./response";
+import type { NextFunction } from "./next-function";
+import type { Request } from "./request";
+import type { Response } from "./response";
 
 /**
  * Regular middleware or route handler.
@@ -9,7 +9,7 @@ import { Response } from "./response";
  * @param res - The outgoing response.
  * @param next - Passes control to the next matching layer.
  */
-type Middleware = (
+export type Middleware = (
   req: Request,
   res: Response,
   next: NextFunction,
@@ -20,7 +20,7 @@ type Middleware = (
  *
  * @param err - The error passed to `next(err)` or thrown by a handler.
  */
-type ErrorMiddleware = (
+export type ErrorMiddleware = (
   err: any,
   req: Request,
   res: Response,
@@ -31,4 +31,4 @@ type ErrorMiddleware = (
  * Accepts handlers typed against other frameworks' request/response types,
  * such as Express middleware from npm.
  */
-type AnyHandler = (...args: any[]) => unknown;
+export type AnyHandler = (...args: any[]) => unknown;

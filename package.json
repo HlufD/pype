@@ -2,11 +2,11 @@
   "name": "router",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "dist/src/index.js",
   "scripts": {
-    "dev": "nodemon src/index.ts",
+    "dev": "nodemon examples/app.ts",
     "build": "tsc",
-    "start": "node dist/index.js",
+    "start": "node dist/examples/app.js",
     "test": "vitest",
     "test:watch": "vitest watch",
     "test:coverage": "vitest run --coverage"

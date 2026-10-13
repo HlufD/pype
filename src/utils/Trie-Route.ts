@@ -13,12 +13,6 @@ interface Options {
   ignoreTrailingSlash?: boolean;
 }
 
-interface WildcardState {
-  node: Node;
-  index: number;
-  params: Record<string, any>;
-}
-
 class Node {
   public handlers: Map<HTTP_METHODS, RouteHandler[]>;
   public staticNodes: Map<string, Node>;
@@ -32,6 +26,14 @@ class Node {
     this.parametricNode = null;
     this.wildCardNode = null;
     this.parameter = null;
+  }
+}
+
+function safeDecode(value: string) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
   }
 }
 
@@ -84,53 +86,72 @@ class RouteNode {
   }
 
   match(url: string, method: HTTP_METHODS) {
-    this.validateUrl(url);
     const segments = this.normalizeUrl(url);
-    let currentNode = this.root;
-    let params: Record<string, any> = {};
-    let wildcardState: WildcardState | null = null;
-    let fullyMatched = true;
 
-    if (segments.length === 0 && currentNode.wildCardNode) {
-      wildcardState = this.saveWildcardState(currentNode, 0, params);
-    } else {
-      for (let i = 0; i < segments.length; i++) {
-        const segment = segments[i];
-        if (currentNode.staticNodes.has(segment)) {
-          if (currentNode.wildCardNode)
-            wildcardState = this.saveWildcardState(currentNode, i, params);
+    if (segments.length === 0) {
+      const handlers = this.root.handlers.get(method);
+      if (handlers) return { handlers, params: {} };
 
-          const staticChild = currentNode.staticNodes.get(segment)!;
-          currentNode = staticChild;
-        } else if (currentNode.parametricNode) {
-          if (currentNode.wildCardNode)
-            wildcardState = this.saveWildcardState(currentNode, i, params);
+      const wildcardHandlers = this.root.wildCardNode?.handlers.get(method);
+      if (wildcardHandlers)
+        return { handlers: wildcardHandlers, params: { "*": "" } };
 
-          const parametricChild = currentNode.parametricNode;
-          params[parametricChild.parameter!] = segment;
-          currentNode = parametricChild;
-        } else if (currentNode.wildCardNode) {
-          wildcardState = this.saveWildcardState(currentNode, i, params);
-          break;
-        } else {
-          fullyMatched = false;
-          break;
-        }
-      }
+      return null;
     }
 
-    let handlers = fullyMatched ? currentNode.handlers.get(method) : null;
+    return this.matchNode(this.root, segments, 0, method, {});
+  }
 
-    if (!handlers && wildcardState) {
-      const { node: wildCardNode, index, params: parameters } = wildcardState;
-      handlers = wildCardNode.handlers.get(method);
-      params = { ...parameters };
-      params["*"] = segments.slice(wildcardState.index).join("/");
+  private matchNode(
+    node: Node,
+    segments: string[],
+    index: number,
+    method: HTTP_METHODS,
+    params: Record<string, string>,
+  ): { handlers: RouteHandler[]; params: Record<string, string> } | null {
+    if (index === segments.length) {
+      const handlers = node.handlers.get(method);
+      return handlers ? { handlers, params } : null;
     }
 
-    if (!handlers) return null;
+    const segment = segments[index];
 
-    return { handlers, params };
+    const staticChild = node.staticNodes.get(segment);
+    if (staticChild) {
+      const result = this.matchNode(
+        staticChild,
+        segments,
+        index + 1,
+        method,
+        params,
+      );
+      if (result) return result;
+    }
+
+    const parametricChild = node.parametricNode;
+    if (parametricChild) {
+      const result = this.matchNode(
+        parametricChild,
+        segments,
+        index + 1,
+        method,
+        { ...params, [parametricChild.parameter!]: safeDecode(segment) },
+      );
+      if (result) return result;
+    }
+
+    const wildcardHandlers = node.wildCardNode?.handlers.get(method);
+    if (wildcardHandlers) {
+      return {
+        handlers: wildcardHandlers,
+        params: {
+          ...params,
+          "*": safeDecode(segments.slice(index).join("/")),
+        },
+      };
+    }
+
+    return null;
   }
 
   private registerStaticNode(segment: string, currentNode: Node): Node {
@@ -181,18 +202,6 @@ class RouteNode {
     currentNode = currentNode.parametricNode;
     currentNode.parameter = parameterName;
     return currentNode;
-  }
-
-  private saveWildcardState(
-    node: Node,
-    index: number,
-    params: Record<string, any>,
-  ): WildcardState {
-    return {
-      node: node.wildCardNode!,
-      index,
-      params: { ...params },
-    };
   }
 
   private validateUrl(url: string) {

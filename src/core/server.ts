@@ -1,24 +1,12 @@
-import {
-  IncomingMessage,
-  STATUS_CODES,
-  ServerResponse,
-  createServer,
-} from "http";
+import { createServer } from "http";
 import { HTTP_METHODS } from "../enums/methods.enum";
 import { RouteHandler } from "../types/route-handler";
 import { RouteNode } from "../utils/Trie-Route";
 import { PypeRouter } from "./router";
 import { NextFunction } from "../types/next-function";
 import { Middleware } from "../types/middleware";
-import { Request } from "../types/request";
-import { Response } from "../types/response";
-import { MIME_TYPES } from "../enums/mime-types";
-import {
-  matchTypes,
-  parseAcceptHeader,
-  serializeCookie,
-} from "../utils/helpers";
-import { CookieOptions } from "../types/cookie-options";
+import { Request } from "./request";
+import { Response } from "./response";
 
 export class Pype {
   routes: RouteNode;
@@ -34,33 +22,32 @@ export class Pype {
   }
 
   public listen(port: number, callback?: () => void) {
-    const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-      const request = this.decorateRequest(req as unknown as Request);
-      const response = this.decorateResponse(res as unknown as Response);
-
-      request.res = response;
-      response.req = request;
-
-      this.handleRequest(request, response);
-    });
-    server.listen(port, callback);
+    const server = createServer(
+      { IncomingMessage: Request, ServerResponse: Response },
+      (req, res) => {
+        req.res = res;
+        this.handleRequest(req, res);
+      },
+    );
+    return server.listen(port, callback);
   }
 
   private handleRequest(request: Request, response: Response) {
-    const method = request.method || HTTP_METHODS.HEAD;
+    const method = (request.method || HTTP_METHODS.GET).toLowerCase();
     const url = request.url || "/";
-    const route = this.routes.match(url, method.toLowerCase() as HTTP_METHODS);
+    const queryStart = url.indexOf("?");
+    const path = queryStart === -1 ? url : url.slice(0, queryStart);
+    const search = queryStart === -1 ? "" : url.slice(queryStart + 1);
 
-    if (!route) {
-      return response.status(404).json({ error: "Not Found", status: 404 });
-    }
+    request.path = path;
+    request.query = parseQuery(search);
 
-    let { handlers, params } = route;
-    request.params = params;
+    const route = this.routes.match(path, method as HTTP_METHODS);
+    if (route) request.params = route.params;
 
     this.executeMiddlewareChain(request, response, [
       ...this.pypeMiddlewares,
-      ...handlers,
+      ...(route ? route.handlers : []),
     ]);
   }
 
@@ -69,23 +56,47 @@ export class Pype {
     res: Response,
     handlers: RouteHandler[] | Middleware[],
   ) {
-    let start = 0;
-    const next = () => {
+    const dispatch = (index: number) => {
       if (res.writableEnded) return;
 
-      const result = handlers[start++](req, res, next);
+      const handler = handlers[index];
+      if (!handler) {
+        res.status(404).json({ error: "Not Found", status: 404 });
+        return;
+      }
 
-      if (result instanceof Promise) {
-        result.catch((error: unknown) => {
-          console.log(`[error]:`, error);
-          return res
-            .status(500)
-            .json({ error: "Internal server error", status: 500 });
-        });
+      let called = false;
+      const next = () => {
+        if (called) {
+          console.warn("[warn]: next() called multiple times");
+          return;
+        }
+        called = true;
+        dispatch(index + 1);
+      };
+
+      try {
+        const result = handler(req, res, next);
+        if (result instanceof Promise) {
+          result.catch((error: unknown) => this.handleError(error, res));
+        }
+      } catch (error) {
+        this.handleError(error, res);
       }
     };
 
-    next();
+    dispatch(0);
+  }
+
+  private handleError(error: unknown, res: Response) {
+    console.log(`[error]:`, error);
+
+    if (res.headersSent) {
+      if (!res.writableEnded) res.end();
+      return;
+    }
+
+    res.status(500).json({ error: "Internal server error", status: 500 });
   }
 
   public use(arg1: string | Middleware, arg2?: PypeRouter | Middleware) {
@@ -100,7 +111,7 @@ export class Pype {
 
       this.pypeMiddlewares.push(
         (req: Request, res: Response, next: NextFunction) => {
-          if (req.url!.startsWith(path)) return handler(req, res, next);
+          if (matchesPrefix(req.path, path)) return handler(req, res, next);
           else next();
         },
       );
@@ -152,301 +163,24 @@ export class Pype {
     }
     return handlers;
   }
+}
 
-  private decorateRequest(req: Request) {
-    req.params = {};
-    req.query = {};
+function parseQuery(search: string): Record<string, string | string[]> {
+  const query: Record<string, string | string[]> = {};
 
-    req.get = function (header: string): string | string[] | undefined {
-      return this.headers[header.toLowerCase()];
-    };
-
-    req.accepts = function (...serverSupportedTypes: string[]): string | false {
-      const acceptHeader = this.get("Accept") as string;
-      const parsedTypes = parseAcceptHeader(acceptHeader);
-
-      for (const { mime } of parsedTypes) {
-        for (const supportedType of serverSupportedTypes) {
-          if (matchTypes(mime, supportedType)) return supportedType;
-        }
-      }
-      return false;
-    };
-
-    return req;
+  for (const [key, value] of new URLSearchParams(search)) {
+    const existing = query[key];
+    if (existing === undefined) query[key] = value;
+    else if (Array.isArray(existing)) existing.push(value);
+    else query[key] = [existing, value];
   }
 
-  private decorateResponse(res: Response) {
-    res.status = function (code: number) {
-      this.statusCode = code;
-      return this;
-    };
-
-    res.sendStatus = function (code: number) {
-      this.status(code);
-      this.type("txt");
-      this.send(STATUS_CODES[code] || String(code));
-      return this;
-    };
-
-    res.send = function (body?: any) {
-      if (this.writableEnded) return this;
-
-      if (Buffer.isBuffer(body)) {
-        if (!this.getHeader("Content-Type")) {
-          this.setHeader("Content-Type", "application/octet-stream");
-        }
-      } else if (typeof body === "object" && body !== null) {
-        if (!this.getHeader("Content-Type")) {
-          this.setHeader("Content-Type", "application/json; charset=utf-8");
-        }
-        body = JSON.stringify(body);
-      } else if (typeof body === "number") {
-        this.statusCode = body;
-        body = String(body);
-        if (!this.getHeader("Content-Type")) {
-          this.setHeader("Content-Type", "text/plain; charset=utf-8");
-        }
-      } else if (typeof body === "string") {
-        if (!this.getHeader("Content-Type")) {
-          this.setHeader("Content-Type", "text/html; charset=utf-8");
-        }
-      }
-
-      if (!this.getHeader("Content-Length") && body != null) {
-        const length =
-          typeof body === "string"
-            ? Buffer.byteLength(body)
-            : Buffer.isBuffer(body)
-              ? body.length
-              : 0;
-
-        if (length > 0) {
-          this.setHeader("Content-Length", length.toString());
-        }
-      }
-
-      this.end(body);
-      return this;
-    };
-
-    res.json = function (data: Record<string, any>) {
-      if (!this.getHeader("Content-Type"))
-        this.setHeader("Content-Type", "application/json; charset=utf-8");
-
-      this.send(data);
-      return this;
-    };
-
-    res.get = function (field: string) {
-      return this.getHeader(field);
-    };
-
-    res.set = function (
-      field: string | Record<string, string>,
-      value?: string,
-    ) {
-      if (typeof field === "string") {
-        if (value === undefined)
-          throw new Error("Value is required when field is a string");
-
-        this.setHeader(field, value);
-      } else {
-        for (const key in field) {
-          this.setHeader(key, field[key]);
-        }
-      }
-      return this;
-    };
-
-    res.type = function (value: string) {
-      if (!value) return this;
-
-      let type = value.trim().toLowerCase();
-
-      if (type.includes("/")) {
-        this.setHeader("Content-Type", type);
-        return this;
-      }
-
-      type = type.replace(/^\./, "");
-
-      const mimeType = MIME_TYPES[type];
-
-      let finalType = mimeType || "application/octet-stream";
-
-      if (finalType.startsWith("text/") && !finalType.includes("charset")) {
-        finalType += "; charset=utf-8";
-      }
-
-      this.setHeader("Content-Type", finalType);
-      return this;
-    };
-
-    res.redirect = function (location: string) {
-      if (!location || this.writableEnded) return this;
-
-      this.status(302);
-      this.set("Location", location);
-
-      if (!this.get("Content-Type"))
-        this.set("Content-Type", "text/plain; charset=utf-8");
-
-      this.end(`Found. Redirecting to ${location}`);
-
-      return this;
-    };
-
-    res.links = function (links: Record<string, string>) {
-      if (!links || typeof links !== "object") {
-        return this;
-      }
-
-      const existing = this.getHeader("Link");
-      const linkValues: string[] = [];
-
-      for (const rel in links) {
-        const url = links[rel];
-
-        if (typeof url !== "string") continue;
-
-        linkValues.push(`<${url}>; rel="${rel}"`);
-      }
-
-      const newValue = linkValues.join(", ");
-
-      if (existing) {
-        this.setHeader("Link", `${existing}, ${newValue}`);
-      } else {
-        this.setHeader("Link", newValue);
-      }
-
-      return this;
-    };
-
-    res.location = function (location: string) {
-      this.set("Location", location);
-      return this;
-    };
-
-    res.cookie = function (
-      name: string,
-      value: any,
-      options: CookieOptions = {},
-    ) {
-      const val =
-        typeof value === "object" ? JSON.stringify(value) : String(value);
-
-      const serialized = serializeCookie(name, val, options);
-      this.append("Set-Cookie", serialized);
-      return this;
-    };
-
-    res.clearCookie = function (name: string, options: CookieOptions = {}) {
-      const opts = { ...options };
-
-      opts.expires = new Date(1);
-      opts.maxAge = undefined;
-
-      return this.cookie(name, "", opts);
-    };
-
-    res.append = function (field: string, value: any) {
-      const prev = this.get(field);
-
-      if (!prev) {
-        this.set(field, value);
-      } else if (Array.isArray(prev)) {
-        this.setHeader(field, [...prev, value]);
-      } else {
-        this.setHeader(field, [prev as string, value]);
-      }
-
-      return this;
-    };
-
-    res.vary = function (headers: string) {
-      if (!headers) return this;
-      const existing = this.get("Vary") as string;
-
-      if (existing === "*") return this;
-
-      if (headers.trim() === "*") {
-        this.set("Vary", "*");
-        return this;
-      }
-
-      const uniqueHeaders = new Set<string>();
-
-      if (existing) {
-        existing
-          .split(",")
-          .map((header) => header.trim())
-          .filter(Boolean)
-          .forEach((header) => {
-            uniqueHeaders.add(header.toLowerCase());
-          });
-      }
-
-      headers
-        .split(",")
-        .map((header) => header.trim())
-        .filter(Boolean)
-        .forEach((header) => {
-          uniqueHeaders.add(header.toLowerCase());
-        });
-
-      this.set("Vary", Array.from(uniqueHeaders).join(", "));
-
-      return this;
-    };
-
-    res.type = function (extension: string) {
-      if (!extension) return this;
-
-      const ext = extension.toLowerCase().replace(/^\./, "");
-
-      const content_type = MIME_TYPES[ext];
-
-      if (!content_type) return this;
-
-      this.set("Content-Type", content_type);
-
-      return this;
-    };
-
-    res.format = function (formats: Record<string, () => any>) {
-      const defaultHandler = formats.default;
-      const normalized: Record<string, () => any> = {};
-
-      for (const key in formats) {
-        if (key === "default") continue;
-
-        let mime = key;
-
-        if (!key.includes("/")) {
-          const ext = key.replace(/^\./, "");
-          mime = MIME_TYPES[ext] || key;
-        }
-
-        normalized[mime] = formats[key];
-      }
-
-      const types = Object.keys(normalized);
-      const match = this.req.accepts(...types);
-
-      if (match) {
-        this.type(match);
-        return normalized[match]();
-      }
-
-      if (defaultHandler) {
-        return defaultHandler();
-      }
-
-      return this.status(406).send("Not Acceptable");
-    };
-
-    return res;
-  }
+  return query;
+}
+
+// "/some" matches "/some" and "/some/...", but not "/something".
+function matchesPrefix(requestPath: string, prefix: string) {
+  const base = prefix.replace(/\/+$/, "");
+  if (base === "") return true;
+  return requestPath === base || requestPath.startsWith(base + "/");
 }

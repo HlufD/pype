@@ -1,0 +1,50 @@
+{
+  "name": "pyper-di",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Dependency injection container for Pype and Node.js",
+  "keywords": [
+    "dependency-injection",
+    "di",
+    "ioc",
+    "container",
+    "typescript"
+  ],
+  "homepage": "https://github.com/HlufD/pipe-router/tree/main/packages/di#readme",
+  "bugs": {
+    "url": "https://github.com/HlufD/pipe-router/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HlufD/pipe-router.git",
+    "directory": "packages/di"
+  },
+  "license": "ISC",
+  "author": "Hluf Abebe",
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "prebuild": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest watch"
+  }
+}

@@ -11,6 +11,7 @@ repository is a monorepo containing the framework and related packages.
 | Package | npm | Description |
 | ------- | --- | ----------- |
 | [`packages/core`](packages/core) | [`pyper-web`](https://www.npmjs.com/package/pyper-web) | The web framework |
+| [`packages/di`](packages/di) | `pyper-di` (not published yet) | Dependency injection container, not started |
 
 To use the framework, see the [`pyper-web` README](packages/core/README.md).
 
@@ -19,6 +20,7 @@ To use the framework, see the [`pyper-web` README](packages/core/README.md).
 ```
 packages/
   core/               pyper-web: src/, tests/, bench/
+  di/                 pyper-di: empty placeholder
 docs/
   ARCHITECTURE.md     how the framework is built
   SECURITY.md         reporting vulnerabilities

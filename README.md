@@ -81,9 +81,6 @@ curl localhost:3000/api/users/42
 # {"id":"42"}
 ```
 
-A complete example with logging, a JSON 404 and graceful shutdown is in
-[`examples/app.ts`](examples/app.ts).
-
 ## Core concepts
 
 ### The request pipeline
@@ -1018,7 +1015,7 @@ Differences:
 - **Shutdown**: `listen()` returns the `http.Server`, so you can stop it
   cleanly on `SIGTERM`.
 
-To report a vulnerability, see [SECURITY.md](SECURITY.md).
+To report a vulnerability, see [SECURITY.md](docs/SECURITY.md).
 
 ## Performance
 
@@ -1041,7 +1038,6 @@ them. `npm run bench:router` measures route lookups alone.
 ## Development
 
 ```sh
-npm run dev            # example app, restarts on changes
 npm test               # all tests
 npm run test:coverage  # tests with coverage thresholds
 npm run test:fuzz      # property-based fuzzing, 20,000 runs per property
@@ -1050,7 +1046,7 @@ npm run build          # dist/ with type declarations
 npm run bench          # HTTP benchmark against Express
 ```
 
-See [CHANGELOG.md](CHANGELOG.md) for release notes.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the framework is built.
 
 ## License
 

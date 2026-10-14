@@ -11,13 +11,6 @@
     "noImplicitOverride": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "rootDir": "./",
-    "outDir": "./.build",
     "types": ["node"]
-  },
-  "include": [
-    "src",
-    "tests",
-    "bench"
-  ]
+  }
 }

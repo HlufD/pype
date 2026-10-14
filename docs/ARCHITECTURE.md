@@ -4,7 +4,11 @@ This document explains how Pype is built: which component does what, how a
 request flows through them, and why the main design decisions were made. It is
 written for contributors and for anyone who wants to understand the code
 before changing it. For how to *use* the framework, see the
-[README](../README.md).
+[package README](../packages/core/README.md).
+
+The framework lives in `packages/core` of this monorepo, published to npm as
+`pyper-web`. File paths below such as `src/core/server.ts` are relative to
+`packages/core`.
 
 ## Contents
 

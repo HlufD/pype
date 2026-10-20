@@ -434,6 +434,37 @@ export class Response extends ServerResponse<Request> {
   }
 
   /**
+   * Renders a view with the app's template engine and sends it, like
+   * Express: `res.locals` are available to the view, and errors go to
+   * `next(err)`. With a callback, it gets the error or HTML instead and
+   * nothing is sent.
+   *
+   * @param view - View name, see {@link Pype.render}.
+   * @param options - Values for the template, or the callback.
+   * @param callback - Called with an error, or the HTML.
+   */
+  render(
+    view: string,
+    options: Record<string, any> | ((err: Error | null, html?: string) => void) = {},
+    callback?: (err: Error | null, html?: string) => void,
+  ) {
+    let done = callback;
+    let opts = options as Record<string, any>;
+    if (typeof options === "function") {
+      done = options as (err: Error | null, html?: string) => void;
+      opts = {};
+    }
+
+    const req = this.req;
+    done ??= (err, html) => {
+      if (err) return req.next ? req.next(err) : this.status(500).end();
+      this.send(html);
+    };
+
+    this.app.render(view, { ...opts, _locals: this.locals }, done);
+  }
+
+  /**
    * Marks the response as a download. With a file name, also sets
    * `Content-Type` from its extension.
    */

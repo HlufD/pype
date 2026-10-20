@@ -12,6 +12,8 @@ import {
   HandlerParam,
   Layer,
   MiddlewareLayer,
+  ParamHandler,
+  PathParam,
   PypeRouter,
   RouteLayer,
   UseHandler,
@@ -21,7 +23,10 @@ import { AnyHandler, ErrorMiddleware, Middleware } from "../types/middleware";
 import { Request } from "./request";
 import { Response } from "./response";
 import { parseQuery } from "../utils/helpers";
+import { parseQs } from "../utils/qs";
 import { compileTrust } from "../utils/trust-proxy";
+import { resolve } from "path";
+import { Engine, View } from "./view";
 
 /** App settings, keyed by Express setting names such as `"trust proxy"`. */
 type Settings = Record<string, any>;
@@ -38,14 +43,27 @@ type Settings = Record<string, any>;
 export class Pype {
   /** Express-compatible settings, e.g. `app.set("trust proxy", "loopback")`. */
   settings: Settings = {};
-  /** Values shared by the whole app, like Express's `app.locals`. */
+  /** Values shared by the whole app and every view, like Express's `app.locals`. `locals.settings` is the app's settings. */
   locals: Record<string, any> = {};
+  /** Template engines by extension, see {@link Pype.engine}. */
+  engines: Record<string, Engine> = {};
+  /** Views found so far by name, used when `"view cache"` is on. */
+  cache: Record<string, View> = {};
 
   private readonly router = new PypeRouter();
   private layers: Layer[] = [];
   private routes = createRouteTable();
   /** Trie entry to every route layer registered for that method and path. */
   private routeLayers = new Map<AnyHandler[], RouteLayer[]>();
+  /** Position of each layer in `layers`. */
+  private layerIndex = new Map<Layer, number>();
+  /**
+   * Layers the tree can't rule out, in order: middleware, regular
+   * expression routes and router ends. A request only walks these and the
+   * route layers the tree matched.
+   */
+  private fixedLayers: Layer[] = [];
+  private fixedIndices: number[] = [];
   private compiledVersion = -1;
 
   /**
@@ -55,15 +73,23 @@ export class Pype {
     this.set("env", process.env.NODE_ENV || "development");
     this.set("etag", true);
     this.set("trust proxy", false);
+    this.set("query parser", "simple");
     this.set("subdomain offset", 2);
     this.set("json spaces", undefined);
     this.set("json replacer", undefined);
+    this.set("view", View);
+    this.set("views", resolve("views"));
+    this.locals.settings = this.settings;
 
     for (const name in settings) this.set(name, settings[name]);
+
+    // Like Express, views are cached in production unless set otherwise.
+    if (!("view cache" in settings) && this.get("env") === "production") this.enable("view cache");
   }
 
   /**
-   * Sets a setting. `"trust proxy"` accepts the same values as Express.
+   * Sets a setting. `"trust proxy"` and `"query parser"` accept the same
+   * values as Express.
    *
    * @param name - Setting name, e.g. `"etag"` or `"json spaces"`.
    * @param value - New value.
@@ -72,6 +98,8 @@ export class Pype {
     this.settings[name] = value;
     if (name === "trust proxy")
       this.settings["trust proxy fn"] = compileTrust(value);
+    if (name === "query parser")
+      this.settings["query parser fn"] = compileQueryParser(value);
     return this;
   }
 
@@ -140,13 +168,13 @@ export class Pype {
    */
   use(...handlers: Array<Middleware | Middleware[]>): this;
   use(
-    path: string,
+    path: PathParam,
     ...handlers: Array<Middleware | Middleware[] | PypeRouter>
   ): this;
   use(...handlers: ErrorMiddleware[]): this;
-  use(path: string, ...handlers: ErrorMiddleware[]): this;
+  use(path: PathParam, ...handlers: ErrorMiddleware[]): this;
   use(...handlers: UseHandler[]): this;
-  use(path: string, ...handlers: UseHandler[]): this;
+  use(path: PathParam, ...handlers: UseHandler[]): this;
   use(...args: any[]): this {
     (this.router.use as (...args: any[]) => PypeRouter)(...args);
     return this;
@@ -159,10 +187,10 @@ export class Pype {
    * @param handlers - Handlers or arrays of handlers, run in order.
    */
   get(setting: string): any;
-  get(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
-  get(path: string, ...handlers: HandlerParam[]): this;
-  get(path: string, ...handlers: HandlerParam[]): any {
-    if (handlers.length === 0) return this.settings[path];
+  get(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
+  get(path: PathParam, ...handlers: HandlerParam[]): this;
+  get(path: PathParam, ...handlers: HandlerParam[]): any {
+    if (handlers.length === 0) return this.settings[path as string];
     this.router.get(path, ...handlers);
     return this;
   }
@@ -173,9 +201,9 @@ export class Pype {
    * @param path - Route path, e.g. `/users/:id`.
    * @param handlers - Handlers or arrays of handlers, run in order.
    */
-  all(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
-  all(path: string, ...handlers: HandlerParam[]): this;
-  all(path: string, ...handlers: HandlerParam[]): this {
+  all(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
+  all(path: PathParam, ...handlers: HandlerParam[]): this;
+  all(path: PathParam, ...handlers: HandlerParam[]): this {
     this.router.all(path, ...handlers);
     return this;
   }
@@ -186,9 +214,9 @@ export class Pype {
    * @param path - Route path, e.g. `/users/:id`.
    * @param handlers - Handlers or arrays of handlers, run in order.
    */
-  post(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
-  post(path: string, ...handlers: HandlerParam[]): this;
-  post(path: string, ...handlers: HandlerParam[]): this {
+  post(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
+  post(path: PathParam, ...handlers: HandlerParam[]): this;
+  post(path: PathParam, ...handlers: HandlerParam[]): this {
     this.router.post(path, ...handlers);
     return this;
   }
@@ -199,9 +227,9 @@ export class Pype {
    * @param path - Route path, e.g. `/users/:id`.
    * @param handlers - Handlers or arrays of handlers, run in order.
    */
-  put(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
-  put(path: string, ...handlers: HandlerParam[]): this;
-  put(path: string, ...handlers: HandlerParam[]): this {
+  put(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
+  put(path: PathParam, ...handlers: HandlerParam[]): this;
+  put(path: PathParam, ...handlers: HandlerParam[]): this {
     this.router.put(path, ...handlers);
     return this;
   }
@@ -212,9 +240,9 @@ export class Pype {
    * @param path - Route path, e.g. `/users/:id`.
    * @param handlers - Handlers or arrays of handlers, run in order.
    */
-  patch(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
-  patch(path: string, ...handlers: HandlerParam[]): this;
-  patch(path: string, ...handlers: HandlerParam[]): this {
+  patch(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
+  patch(path: PathParam, ...handlers: HandlerParam[]): this;
+  patch(path: PathParam, ...handlers: HandlerParam[]): this {
     this.router.patch(path, ...handlers);
     return this;
   }
@@ -225,9 +253,9 @@ export class Pype {
    * @param path - Route path, e.g. `/users/:id`.
    * @param handlers - Handlers or arrays of handlers, run in order.
    */
-  delete(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
-  delete(path: string, ...handlers: HandlerParam[]): this;
-  delete(path: string, ...handlers: HandlerParam[]): this {
+  delete(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
+  delete(path: PathParam, ...handlers: HandlerParam[]): this;
+  delete(path: PathParam, ...handlers: HandlerParam[]): this {
     this.router.delete(path, ...handlers);
     return this;
   }
@@ -238,9 +266,9 @@ export class Pype {
    * @param path - Route path, e.g. `/users/:id`.
    * @param handlers - Handlers or arrays of handlers, run in order.
    */
-  head(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
-  head(path: string, ...handlers: HandlerParam[]): this;
-  head(path: string, ...handlers: HandlerParam[]): this {
+  head(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
+  head(path: PathParam, ...handlers: HandlerParam[]): this;
+  head(path: PathParam, ...handlers: HandlerParam[]): this {
     this.router.head(path, ...handlers);
     return this;
   }
@@ -252,11 +280,11 @@ export class Pype {
    * @param handlers - Handlers or arrays of handlers, run in order.
    */
   options(
-    path: string,
+    path: PathParam,
     ...handlers: Array<RouteHandler | RouteHandler[]>
   ): this;
-  options(path: string, ...handlers: HandlerParam[]): this;
-  options(path: string, ...handlers: HandlerParam[]): this {
+  options(path: PathParam, ...handlers: HandlerParam[]): this;
+  options(path: PathParam, ...handlers: HandlerParam[]): this {
     this.router.options(path, ...handlers);
     return this;
   }
@@ -266,8 +294,91 @@ export class Pype {
    *
    * @example app.route("/users").get(list).post(create)
    */
-  route(path: string) {
+  route(path: PathParam) {
     return this.router.route(path);
+  }
+
+  /**
+   * Registers a template engine for an extension, like Express:
+   * `fn(path, options, callback)` renders the file. Without a registered
+   * engine, the npm module named after the extension is loaded
+   * (`require("pug").__express`).
+   *
+   * @param ext - Extension, with or without the dot.
+   * @throws When `fn` isn't a function.
+   * @example app.engine("html", require("ejs").renderFile)
+   */
+  engine(ext: string, fn: Engine): this {
+    if (typeof fn !== "function") throw new Error("callback function required");
+    this.engines[ext.startsWith(".") ? ext : `.${ext}`] = fn;
+    return this;
+  }
+
+  /**
+   * Renders a view to HTML, like Express's `app.render()`. Options are
+   * `app.locals`, then `options._locals` (what `res.render()` passes as
+   * `res.locals`), then `options`. `options.cache` defaults to the
+   * `"view cache"` setting, which is on when `env` is `"production"`.
+   *
+   * @param name - View name relative to the `"views"` directories; the
+   * `"view engine"` extension is added when it has none.
+   * @param options - Values for the template, or the callback.
+   * @param callback - Called with an error, or the HTML.
+   */
+  render(
+    name: string,
+    options: Record<string, any> | ((err: Error | null, html?: string) => void) = {},
+    callback?: (err: Error | null, html?: string) => void,
+  ): void {
+    let done = callback!;
+    let opts = options as Record<string, any>;
+    if (typeof options === "function") {
+      done = options as (err: Error | null, html?: string) => void;
+      opts = {};
+    }
+
+    const renderOptions: Record<string, any> = { ...this.locals, ...opts._locals, ...opts };
+    if (renderOptions.cache == null) renderOptions.cache = this.enabled("view cache");
+
+    let view: View | undefined = renderOptions.cache ? this.cache[name] : undefined;
+    if (!view) {
+      const ViewClass = this.get("view") as typeof View;
+      view = new ViewClass(name, {
+        defaultEngine: this.get("view engine"),
+        root: this.get("views"),
+        engines: this.engines,
+      });
+
+      if (!view.path) {
+        const root = view.root;
+        const dirs =
+          Array.isArray(root) && root.length > 1
+            ? `directories "${root.slice(0, -1).join('", "')}" or "${root[root.length - 1]}"`
+            : `directory "${root}"`;
+        return done(Object.assign(new Error(`Failed to lookup view "${name}" in views ${dirs}`), { view }));
+      }
+
+      if (renderOptions.cache) this.cache[name] = view;
+    }
+
+    try {
+      view.render(renderOptions, done);
+    } catch (error) {
+      done(error as Error);
+    }
+  }
+
+  /**
+   * Adds a callback for a route parameter of the app's own routes, like
+   * Express's `app.param()`; see {@link PypeRouter.param}. Mounted routers
+   * have their own `param()`.
+   *
+   * @param name - Parameter name, or an array of names.
+   * @example app.param("id", async (req, res, next, id) => { req.user = await find(id); next(); })
+   */
+  param(name: string | string[], fn: ParamHandler): this {
+    for (const each of [name].flat()) this.router.param(each, fn);
+    return this;
   }
 
   /**
@@ -284,7 +395,8 @@ export class Pype {
     const entries = new Map<string, AnyHandler[]>();
 
     for (const layer of layers) {
-      if (layer.kind !== "route") continue;
+      // Regular expression routes are matched in the pipeline, not the tree.
+      if (layer.kind !== "route" || layer.pattern) continue;
 
       for (const method of layer.methods) {
         const key = `${method} ${normalizeBase(layer.fullPath) || "/"}`;
@@ -299,7 +411,7 @@ export class Pype {
         entries.set(key, entry);
         routeLayers.set(entry, [layer]);
         routes.register(layer.fullPath, method, entry as RouteHandler[], {
-          path: layer.routePath,
+          path: layer.fullPath,
           baseUrl: layer.baseUrl,
         });
       }
@@ -308,6 +420,12 @@ export class Pype {
     this.layers = layers;
     this.routes = routes;
     this.routeLayers = routeLayers;
+    this.layerIndex = new Map(layers.map((layer, index) => [layer, index]));
+    this.fixedIndices = [];
+    layers.forEach((layer, index) => {
+      if (layer.kind !== "route" || layer.pattern) this.fixedIndices.push(index);
+    });
+    this.fixedLayers = this.fixedIndices.map((index) => layers[index]);
     this.compiledVersion = routingVersion();
   }
 
@@ -335,10 +453,25 @@ export class Pype {
         ? this.routes.match(req.path, HTTP_METHODS.GET)
         : null);
 
-    const matchedLayers = new Set(
-      match ? this.routeLayers.get(match.handlers) : [],
-    );
-    const layers = this.layers;
+    const matched = match ? this.routeLayers.get(match.handlers)! : [];
+
+    // Automatic OPTIONS, like Express's router: each router collects the
+    // methods of the routes it passes that match the path but don't handle
+    // OPTIONS, and answers with them when it is done.
+    const optionsMethods = method === HTTP_METHODS.OPTIONS ? new Map<PypeRouter, Set<string>>() : null;
+    const pathLayers = optionsMethods ? this.routeLayersFor(req.path) : null;
+    const matchedLayers = optionsMethods ? new Set<Layer>(matched) : null;
+    const layers = this.dispatchOrder(pathLayers ? [...new Set([...matched, ...pathLayers])] : matched);
+
+    let paramCalls: Map<PypeRouter, Record<string, ParamCall>> | undefined;
+    const getParamCalls = () => (paramCalls ??= new Map());
+    let ranGroups: Set<object> | undefined;
+    const routerDone = (router: PypeRouter | undefined) => {
+      const methods = router && optionsMethods?.get(router);
+      if (!methods?.size || res.headersSent) return false;
+      sendOptions(res, [...methods].sort().join(", "));
+      return true;
+    };
     let index = 0;
     let current: Layer | undefined;
 
@@ -355,35 +488,84 @@ export class Pype {
           index++;
         }
         err = undefined;
+        if (routerDone(router)) return;
       }
 
       while (index < layers.length) {
         const layer = layers[index++];
+        // An array path is one layer in Express: it runs at most once.
+        if (layer.group && ranGroups?.has(layer.group)) continue;
+
+        if (layer.kind === "end") {
+          if (!err && routerDone(layer.router)) return;
+          continue;
+        }
 
         if (layer.kind === "route") {
-          if (!matchedLayers.has(layer)) continue;
-          // Like Express, a param that fails to decode skips the route with a 400.
-          if (match!.error) {
-            err = err || match!.error;
+          // Like Express, routes don't run while an error is pending; only
+          // errors raised inside a route reach its error handlers.
+          if (err) continue;
+
+          if (optionsMethods && !layer.methods.includes(HTTP_METHODS.OPTIONS) && routeMatchesPath(layer, req.path, pathLayers!)) {
+            const router = layer.routers[layer.routers.length - 1];
+            if (!optionsMethods.has(router)) optionsMethods.set(router, new Set());
+            const methods = optionsMethods.get(router)!;
+            for (const name of layer.methods) methods.add(name.toUpperCase());
+            if (layer.methods.includes(HTTP_METHODS.GET)) methods.add("HEAD");
             continue;
           }
+
+          let params: Record<string, string>;
+          if (layer.pattern) {
+            if (!handlesMethod(layer, method)) continue;
+            let found: PatternMatch | null;
+            try {
+              found = matchPattern(layer.pattern, relativePath(req.path, layer.fullPath));
+            } catch (error) {
+              err = error;
+              continue;
+            }
+            if (!found) continue;
+            params = found.params;
+          } else {
+            // Only matched route layers are in the order, plus, for OPTIONS,
+            // the path's other routes, which were handled above.
+            if (matchedLayers && !matchedLayers.has(layer)) continue;
+            // Like Express, a param that fails to decode skips the route with a 400.
+            if (match!.error) {
+              err = match!.error;
+              continue;
+            }
+            params = match!.params;
+          }
+
+          if (layer.group) (ranGroups ??= new Set()).add(layer.group);
           current = layer;
-          return this.runRoute(req, res, layer, match!.params, method, err, next);
+          return this.runRoute(req, res, layer, params, method, getParamCalls, next);
         }
 
         if (!matchesPrefix(req.path, layer.path)) continue;
 
+        let mounted: PatternMatch | null = null;
+        if (layer.pattern) {
+          try {
+            mounted = matchMount(layer.pattern, relativePath(req.path, layer.path));
+          } catch (error) {
+            err = err || error;
+            continue;
+          }
+          if (!mounted) continue;
+        }
+
         const isErrorHandler = layer.handle.length === 4;
         if (Boolean(err) !== isErrorHandler) continue;
 
+        if (layer.group) (ranGroups ??= new Set()).add(layer.group);
         current = layer;
-        return this.callMiddleware(req, res, layer, err, next);
+        return this.callMiddleware(req, res, layer, err, next, mounted, getParamCalls);
       }
 
-      if (!err && method === HTTP_METHODS.OPTIONS && !res.headersSent) {
-        const allow = this.allowedMethods(req.path);
-        if (allow) return sendOptions(res, allow);
-      }
+      if (!err && routerDone(this.router)) return;
 
       this.finalHandler(req, res, err);
     };
@@ -393,28 +575,34 @@ export class Pype {
   }
 
   /**
-   * The `Allow` list for an automatic OPTIONS response, like Express: the
-   * methods of every route matching `path` that doesn't handle OPTIONS
-   * itself (so not `all()` routes), HEAD added for GET, sorted and
-   * upper-case. `null` when there are none.
+   * The layers a request walks, in registration order: the fixed layers
+   * merged with the route layers the tree matched.
    */
-  private allowedMethods(path: string): string | null {
-    const methods = new Set<string>();
-    const seen = new Set<RouteLayer>();
+  private dispatchOrder(routeLayers: RouteLayer[]): Layer[] {
+    if (routeLayers.length === 0) return this.fixedLayers;
 
+    const routeIndices = routeLayers.map((layer) => this.layerIndex.get(layer)!).sort((a, b) => a - b);
+    const fixed = this.fixedIndices;
+    const order: Layer[] = [];
+    let f = 0;
+    let r = 0;
+    while (f < fixed.length || r < routeIndices.length) {
+      const next = r >= routeIndices.length || (f < fixed.length && fixed[f] < routeIndices[r]) ? fixed[f++] : routeIndices[r++];
+      order.push(this.layers[next]);
+    }
+    return order;
+  }
+
+  /** Route layers in the tree that match `path` for any method, for automatic OPTIONS. */
+  private routeLayersFor(path: string): Set<RouteLayer> {
+    const found = new Set<RouteLayer>();
     for (const method of Object.values(HTTP_METHODS)) {
       const match = this.routes.match(path, method);
-      for (const layer of (match && this.routeLayers.get(match.handlers)) || []) {
-        if (seen.has(layer)) continue;
-        seen.add(layer);
-        if (layer.methods.includes(HTTP_METHODS.OPTIONS)) continue;
-
-        for (const name of layer.methods) methods.add(name.toUpperCase());
-        if (layer.methods.includes(HTTP_METHODS.GET)) methods.add("HEAD");
-      }
+      // A param that fails to decode makes Express skip the route.
+      if (!match || match.error) continue;
+      for (const layer of this.routeLayers.get(match.handlers) ?? []) found.add(layer);
     }
-
-    return methods.size > 0 ? [...methods].sort().join(", ") : null;
+    return found;
   }
 
   /**
@@ -446,7 +634,7 @@ export class Pype {
     req.path = path;
     req.url = path === rawPath ? url : path + url.slice(rawPath.length);
     req.query =
-      queryStart === -1 ? Object.create(null) : parseQuery(url.slice(queryStart + 1));
+      this.settings["query parser fn"](queryStart === -1 ? null : url.slice(queryStart + 1));
     req.baseUrl = "";
     req.params = {};
     res.locals = res.locals || {};
@@ -465,9 +653,28 @@ export class Pype {
     layer: MiddlewareLayer,
     err: any,
     next: (err?: any) => void,
+    mounted: PatternMatch | null = null,
+    getParamCalls?: () => Map<PypeRouter, Record<string, ParamCall>>,
   ) {
     const { url, path, baseUrl } = req;
+    // Like Express, middleware sees the params of its own mount path only.
+    req.params = mounted ? mounted.params : {};
+
+    // Like Express, the router's param() callbacks run for a regular
+    // expression mount path's params too.
+    const router = layer.routers[layer.routers.length - 1];
+    const keys = mounted ? Object.keys(mounted.params) : [];
+    if (getParamCalls && keys.length > 0 && router.hasParams) {
+      const paramCalls = getParamCalls();
+      let calls = paramCalls.get(router);
+      if (!calls) paramCalls.set(router, (calls = Object.create(null) as Record<string, ParamCall>));
+      return processParams(router.params, keys, calls, req, res, (error) =>
+        error ? next(error) : this.callMiddleware(req, res, layer, err, next, mounted),
+      );
+    }
+
     mount(req, layer.path);
+    if (mounted) mount(req, mounted.path);
 
     const done = once((error?: any) => {
       req.url = url;
@@ -480,8 +687,11 @@ export class Pype {
   }
 
   /**
-   * Runs a route's handlers in order. While an error is pending only
-   * four-argument handlers run; `next("route")` leaves the route early.
+   * Runs a route: first the `param()` callbacks of the route's router for
+   * its parameters, then its handlers in order. Four-argument handlers run
+   * for errors raised inside the route; `next("route")` leaves it early.
+   *
+   * @param getParamCalls - `param()` results of this request, by router, created on first use.
    */
   private runRoute(
     req: Request,
@@ -489,7 +699,7 @@ export class Pype {
     layer: RouteLayer,
     params: Record<string, string>,
     method: string,
-    err: any,
+    getParamCalls: () => Map<PypeRouter, Record<string, ParamCall>>,
     next: (err?: any) => void,
   ) {
     const { url, path, baseUrl } = req;
@@ -517,7 +727,14 @@ export class Pype {
       leave(error);
     };
 
-    routeNext(err);
+    const router = layer.routers[layer.routers.length - 1];
+    const keys = layer.pattern ? Object.keys(params) : layer.keys;
+    if (keys.length === 0 || !router.hasParams) return routeNext();
+
+    const paramCalls = getParamCalls();
+    let calls = paramCalls.get(router);
+    if (!calls) paramCalls.set(router, (calls = Object.create(null) as Record<string, ParamCall>));
+    processParams(router.params, keys, calls, req, res, (error) => (error ? leave(error) : routeNext()));
   }
 
   /**
@@ -599,6 +816,192 @@ function once(fn: (err?: any) => void) {
     called = true;
     fn(err);
   };
+}
+
+/** The result of a parameter's `param()` callbacks in one request, reused for the same value. */
+interface ParamCall {
+  error: any;
+  /** The value the callbacks ran for. */
+  match: string;
+  /** `req.params[name]` after the callbacks, which may have changed it. */
+  value: string;
+}
+
+/**
+ * Runs `param()` callbacks for a route's parameters, the algorithm of
+ * Express's router: callbacks of one parameter run in order, and a value that
+ * already ran in this request reuses the result, unless it ended with
+ * `next("route")`.
+ */
+function processParams(
+  callbacks: Record<string, ParamHandler[]>,
+  keys: string[],
+  called: Record<string, ParamCall>,
+  req: Request,
+  res: Response,
+  done: (err?: any) => void,
+) {
+  let i = 0;
+  let fnIndex = 0;
+  let key: string;
+  let value: string;
+  let fns: ParamHandler[] | undefined;
+  let call: ParamCall;
+
+  const param = (err?: any): void => {
+    if (err) return done(err);
+    if (i >= keys.length) return done();
+
+    fnIndex = 0;
+    key = keys[i++];
+    value = req.params[key];
+    fns = callbacks[key];
+    const previous = called[key];
+
+    if (value === undefined || !fns) return param();
+    if (previous && (previous.match === value || (previous.error && previous.error !== "route"))) {
+      req.params[key] = previous.value;
+      return param(previous.error);
+    }
+
+    called[key] = call = { error: null, match: value, value };
+    paramCallback();
+  };
+
+  const paramCallback = (err?: any): void => {
+    const fn = fns![fnIndex++];
+    call.value = req.params[key];
+
+    if (err) {
+      call.error = err;
+      return param(err);
+    }
+    if (!fn) return param();
+
+    try {
+      const result = fn(req, res, paramCallback, value, key);
+      if (result && typeof result.then === "function") {
+        result.then(undefined, (error: unknown) => paramCallback(error || new Error("Rejected promise")));
+      }
+    } catch (error) {
+      paramCallback(error);
+    }
+  };
+
+  param();
+}
+
+/** A regular expression path that matched: its params and the matched text. */
+interface PatternMatch {
+  params: Record<string, string>;
+  path: string;
+}
+
+/**
+ * Finds the capture groups of a regular expression path the way Express's
+ * router does, by scanning its source: named groups keep their name, the
+ * others are numbered from 0.
+ */
+const MATCHING_GROUP = /\((?:\?<(.*?)>)?(?!\?)/g;
+
+/** Group names of each regular expression path, computed once. */
+const patternKeys = new WeakMap<RegExp, Array<string | number>>();
+
+function keysOf(pattern: RegExp) {
+  let keys = patternKeys.get(pattern);
+  if (!keys) {
+    keys = [];
+    let unnamed = 0;
+    for (const group of pattern.source.matchAll(MATCHING_GROUP)) keys.push(group[1] || unnamed++);
+    patternKeys.set(pattern, keys);
+  }
+  return keys;
+}
+
+/**
+ * Matches a regular expression route path like Express: params come from the
+ * capture groups, URL-decoded, and groups that didn't take part are left out.
+ *
+ * @throws A 400 error when a param has a malformed escape.
+ */
+function matchPattern(pattern: RegExp, path: string): PatternMatch | null {
+  const match = pattern.exec(path);
+  if (!match) return null;
+
+  const keys = keysOf(pattern);
+  const params: Record<string, string> = {};
+  for (let i = 1; i < match.length; i++) {
+    const value = decodeParam(match[i]);
+    if (value !== undefined) params[keys[i - 1] ?? i - 1] = value;
+  }
+  return { params, path: match[0] };
+}
+
+/**
+ * Matches a regular expression mount path like Express: the match must start
+ * the path and end at a `/` or the end of it.
+ */
+function matchMount(pattern: RegExp, path: string): PatternMatch | null {
+  const match = matchPattern(pattern, path);
+  if (!match || !path.startsWith(match.path)) return null;
+  const next = path[match.path.length];
+  return next && next !== "/" ? null : match;
+}
+
+/** Decodes a captured param like Express's router, with a 400 for malformed escapes. */
+function decodeParam(value: string | undefined) {
+  if (typeof value !== "string" || value.length === 0) return value;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw Object.assign(new URIError(`Failed to decode param '${value}'`), { status: 400, statusCode: 400 });
+  }
+}
+
+/** The request path below a mount path. */
+function relativePath(path: string, mountPath: string) {
+  return path.slice(normalizeBase(mountPath).length) || "/";
+}
+
+/** Whether a route's path matches the request, whatever the method; for automatic OPTIONS. */
+function routeMatchesPath(layer: RouteLayer, path: string, treeLayers: Set<RouteLayer>) {
+  if (!layer.pattern) return treeLayers.has(layer);
+  try {
+    return matchPattern(layer.pattern, relativePath(path, layer.fullPath)) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether a route handles a method, HEAD falling back to GET like Express. */
+function handlesMethod(layer: RouteLayer, method: HTTP_METHODS) {
+  if (layer.methods.includes(method)) return true;
+  return method === HTTP_METHODS.HEAD && layer.methods.includes(HTTP_METHODS.GET);
+}
+
+/** Parses `req.query` from the text after `?`, `null` without a `?`. */
+type QueryParser = (query: string | null) => any;
+
+/**
+ * Compiles an Express `"query parser"` setting: `"simple"` or `true` for
+ * Node's `querystring`, `"extended"` for `qs` rules with nested objects and
+ * arrays, `false` for no parsing, or a custom function.
+ *
+ * @throws When the value is none of those.
+ */
+function compileQueryParser(value: unknown): QueryParser {
+  if (typeof value === "function") return value as QueryParser;
+  switch (value) {
+    case true:
+    case "simple":
+      return (query) => (query === null ? Object.create(null) : parseQuery(query));
+    case false:
+      return () => Object.create(null);
+    case "extended":
+      return (query) => parseQs(query ?? "");
+    default:
+      throw new TypeError(`unknown value for query parser function: ${value}`);
+  }
 }
 
 /** Answers an OPTIONS request nothing handled, like Express's router. */

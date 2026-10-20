@@ -7,6 +7,7 @@ import cookieParser from "cookie-parser";
 import { Pype } from "../src/core/server";
 import { PypeRouter } from "../src/core/router";
 import { json, raw, text, urlencoded } from "../src/middlewares/body-parser";
+import { View } from "../src/core/view";
 import fc from "fast-check";
 import { Reply, SendOptions, start, TestServer } from "./support/http";
 
@@ -255,6 +256,7 @@ function define(app: any, kind: Kind) {
   // Body parsers
   app.post("/body/json", k.json({ limit: "1kb" }), (req: any, res: any) => res.json({ body: req.body ?? "missing" }));
   app.post("/body/json-loose", k.json({ strict: false }), (req: any, res: any) => res.json({ body: req.body ?? "missing" }));
+  app.post("/body/json-no-inflate", k.json({ inflate: false }), (req: any, res: any) => res.json({ body: req.body ?? "missing" }));
   app.post("/body/form", k.urlencoded({ extended: false } as any), (req: any, res: any) => res.json({ body: { ...req.body } }));
   app.post("/body/text", k.text(), (req: any, res: any) => res.json({ body: req.body ?? "missing" }));
   app.post("/body/raw", k.raw(), (req: any, res: any) => res.json({ length: req.body?.length ?? "missing" }));
@@ -681,6 +683,47 @@ describe("body parser edge cases match Express", () => {
   it("json() with an unknown Content-Encoding", () =>
     post("/body/json", '{"a":1}', { "Content-Type": "application/json", "Content-Encoding": "foo" }));
 
+  describe("compressed bodies", () => {
+    const json = '{"a":"compressed ü"}';
+    const zlib = require("zlib") as typeof import("zlib");
+    const cases: [string, Buffer, string][] = [
+      ["gzip", zlib.gzipSync(json), "gzip"],
+      ["deflate", zlib.deflateSync(json), "deflate"],
+      ["br", zlib.brotliCompressSync(json), "br"],
+      ["upper-case GZIP", zlib.gzipSync(json), "GZIP"],
+      ["x-gzip", zlib.gzipSync(json), "x-gzip"],
+      ["a list of encodings", zlib.gzipSync(json), "gzip, identity"],
+      ["identity", Buffer.from(json), "identity"],
+      ["corrupt gzip", Buffer.from("not gzip at all"), "gzip"],
+      ["truncated gzip", zlib.gzipSync(json).subarray(0, 10), "gzip"],
+      ["raw deflate sent as deflate", zlib.deflateRawSync(json), "deflate"],
+      ["gzip sent as br", zlib.gzipSync(json), "br"],
+      ["gzip over the 1kb limit", zlib.gzipSync(JSON.stringify({ a: "x".repeat(5000) })), "gzip"],
+      ["empty gzip", zlib.gzipSync(""), "gzip"],
+    ];
+
+    it.each(cases)("json() with %s", (_name, body, encoding) =>
+      post("/body/json", body, { "Content-Type": "application/json", "Content-Encoding": encoding }));
+
+    it.each(cases)("json({ inflate: false }) with %s", (_name, body, encoding) =>
+      post("/body/json-no-inflate", body, { "Content-Type": "application/json", "Content-Encoding": encoding }));
+
+    it("urlencoded() and text() with gzip, and a latin1 charset inside", async () => {
+      await post("/body/form", zlib.gzipSync("a=1&b=%C3%A9"), {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Content-Encoding": "gzip",
+      });
+      await post("/body/text", zlib.gzipSync(Buffer.from("café", "latin1")), {
+        "Content-Type": "text/plain; charset=iso-8859-1",
+        "Content-Encoding": "gzip",
+      });
+      await post("/body/raw", zlib.deflateSync(Buffer.alloc(100, 1)), {
+        "Content-Type": "application/octet-stream",
+        "Content-Encoding": "deflate",
+      });
+    });
+  });
+
   it.each(["iso-8859-1", "utf-8", "latin1", "utf-16"])("urlencoded() with charset %s", (charset) =>
     post("/body/form", Buffer.from("name=caf%E9&raw=é", "latin1"), {
       "Content-Type": `application/x-www-form-urlencoded; charset=${charset}`,
@@ -734,6 +777,26 @@ describe("automatic OPTIONS matches Express", () => {
   it.each(["/x", "/params/1", "/put-only", "/explicit", "/explicit-next", "/x?query=1", "/x/"])("OPTIONS %s", (path) =>
     same(path, { method: "OPTIONS" }, pair),
   );
+
+  it("each router answers OPTIONS for its own routes when it is done, before later middleware", async () => {
+    const nested = await startPair((app, kind) => {
+      const k = kit(kind);
+      const router = k.Router();
+      const inner = k.Router();
+      inner.patch("/z", (_req: any, res: any) => res.send("patch"));
+      router.put("/y", (_req: any, res: any) => res.send("put"));
+      router.use("/in", inner);
+      router.get("/leave", (_req: any, _res: any, next: any) => next());
+      router.use("/leave", (_req: any, _res: any, next: any) => next("router"));
+      router.post("/leave", (_req: any, res: any) => res.send("post"));
+      app.use("/r", router);
+      app.get("/r/y", (_req: any, res: any) => res.send("get"));
+      app.delete("/r/in/z", (_req: any, res: any) => res.send("delete"));
+      app.use((_req: any, res: any) => res.status(404).send("catch-all 404"));
+    });
+    for (const path of ["/r/y", "/r/in/z", "/r/leave", "/r/none"]) await same(path, { method: "OPTIONS" }, nested);
+    await Promise.all([nested.express.close(), nested.pype.close()]);
+  });
 
   it.each(["/missing", "/all"])("OPTIONS %s without a route answers 404 in both", async (path) => {
     const [fromExpress, fromPype] = await both(path, { method: "OPTIONS" }, pair);
@@ -843,19 +906,6 @@ describe("documented differences from Express", () => {
     expect(hits).toEqual({ express: 1, pype: 0 });
   });
 
-  it("Pype rejects compressed bodies with 415, Express inflates them", async () => {
-    const { gzipSync } = await import("zlib");
-    const options = {
-      method: "POST",
-      body: gzipSync('{"a":1}'),
-      headers: { "Content-Type": "application/json", "Content-Encoding": "gzip" },
-    };
-    const [fromExpress, fromPype] = await both("/body/json", options);
-    expect(fromExpress.status).toBe(200);
-    expect(fromPype.status).toBe(415);
-    expect(JSON.parse(fromPype.text).type).toBe("encoding.unsupported");
-  });
-
   it("sendFile errors carry a standard message, Express passes the file system error", async () => {
     // Pype's final handler shows 4xx messages, so it must not contain the path.
     const pair = await startPair((app) => {
@@ -870,19 +920,7 @@ describe("documented differences from Express", () => {
     expect(JSON.parse(fromPype.text)).toEqual({ message: "Not Found", code: "ENOENT" });
   });
 
-  it("Pype answers automatic OPTIONS after all middleware, Express inside the router that matched", async () => {
-    const pair = await startPair((app, kind) => {
-      const router = kit(kind).Router();
-      router.put("/y", (_req: any, res: any) => res.send("put"));
-      app.use("/r", router);
-      app.get("/r/y", (_req: any, res: any) => res.send("get"));
-    });
-    const [fromExpress, fromPype] = await both("/r/y", { method: "OPTIONS" }, pair);
-    await Promise.all([pair.express.close(), pair.pype.close()]);
 
-    expect(fromExpress.headers.allow).toBe("PUT");
-    expect(fromPype.headers.allow).toBe("GET, HEAD, PUT");
-  });
 });
 
 describe("fuzzing against Express", () => {
@@ -961,4 +999,535 @@ describe("fuzzing against Express", () => {
       "/is",
       { method: "POST", body: "x", headers: { "Content-Type": type } },
     ]));
+});
+
+describe("extended forms, query parsers and body-parser options match Express", () => {
+  let pair: Pair;
+  const queryPairs: Partial<Record<string, Pair>> = {};
+
+  /** Nested keys, arrays past the limit, depth, prototypes and odd brackets. */
+  const NESTED = [
+    "a[b][c]=1&a[b][d]=2",
+    "x[]=1&x[]=2&x[]=3",
+    "y[0]=a&y[2]=c&y[1]=b",
+    "z[a]=1&z=2",
+    "z=2&z[a]=1",
+    "m[1000]=x&m[1]=y",
+    "n[]=",
+    "deep[a][b][c][d][e][f][g]=1",
+    "a[]=1&a[]=2&a[5]=x",
+    "a[b]=1&a[]=2",
+    "a[]=1&a[b]=2",
+    "a[0][b]=1&a[0][c]=2&a[1][b]=3",
+    "__proto__[x]=1&a[__proto__][y]=2&constructor[prototype][z]=3",
+    "hasOwnProperty=1&toString[x]=2",
+    "a[b=1",
+    "a]b[=1",
+    "a[[b]]=1",
+    "a[b]c=1",
+    "[a]=1&[]=2",
+    "a.b=1",
+    "a=%5Bx%5D&b%5Bc%5D=1",
+    "a=1&a=2&a[]=3",
+    Array.from({ length: 25 }, (_, i) => `big[]=${i}`).join("&"),
+    Array.from({ length: 150 }, (_, i) => `huge[]=${i}`).join("&"),
+  ];
+
+  beforeAll(async () => {
+    pair = await startPair((app, kind) => {
+      const k = kit(kind);
+      const reply = (req: any, res: any) => res.json({ body: req.body ?? "missing" });
+      app.post("/extended", k.urlencoded({ extended: true }), reply);
+      app.post("/flat", k.urlencoded({ extended: false }), reply);
+      app.post("/limit", k.urlencoded({ extended: true, parameterLimit: 3 }), reply);
+      app.post("/depth", k.urlencoded({ extended: true, depth: 2 }), reply);
+      app.post("/sentinel", k.urlencoded({ extended: true, charsetSentinel: true, interpretNumericEntities: true }), reply);
+      app.post("/latin1", k.urlencoded({ defaultCharset: "iso-8859-1" }), reply);
+      app.post("/text-latin1", k.text({ defaultCharset: "iso-8859-1" }), reply);
+      app.post(
+        "/verify",
+        k.json({
+          verify: (_req: any, _res: any, body: Buffer, charset: string) => {
+            if (body.includes("forbidden")) throw Object.assign(new Error("verify failed"), { type: body.includes("typed") ? "custom.type" : undefined });
+            if (charset !== "utf-8") throw new Error(`charset ${charset}`);
+          },
+        }),
+        reply,
+      );
+      app.post("/raw-verify", k.raw({ verify: (_req: any, _res: any, _body: Buffer, charset: any) => {
+        if (charset !== null && charset !== undefined) throw new Error(`charset ${charset}`);
+      } }), (req: any, res: any) => res.json({ length: req.body.length }));
+      app.post("/reviver", k.json({ reviver: (key: string, value: any) => (key === "n" ? value * 2 : value) }), reply);
+      app.use((err: any, _req: any, res: any, _next: any) =>
+        res.status(err.status || 500).json({ status: err.status, type: err.type ?? null, message: err.message }),
+      );
+    });
+
+    for (const setting of ["simple", "extended", false, true]) {
+      queryPairs[String(setting)] = await startPair(
+        (app) => app.get("/q", (req: any, res: any) => res.json({ query: req.query })),
+        { "query parser": setting },
+      );
+    }
+  });
+
+  afterAll(async () => {
+    await Promise.all(
+      [pair, ...Object.values(queryPairs)].flatMap((p) => [p!.express.close(), p!.pype.close()]),
+    );
+  });
+
+  const form = (path: string, body: string | Buffer, type = "application/x-www-form-urlencoded") =>
+    same(path, { method: "POST", body, headers: { "Content-Type": type } }, pair);
+
+  it.each(NESTED)("urlencoded({ extended: true }) with %s", (body) => form("/extended", body));
+  it.each(NESTED)("urlencoded({ extended: false }) with %s", (body) => form("/flat", body));
+
+  it.each(["a=1&b=2&c=3", "a=1&b=2&c=3&d=4", "a[b][c]=1", "a[b][c][d]=1", "a[b]=1&c[d][e][f]=2"])(
+    "parameterLimit and depth with %s",
+    async (body) => {
+      await form("/limit", body);
+      await form("/depth", body);
+    },
+  );
+
+  it.each([
+    "utf8=%E2%9C%93&a=%C3%A9",
+    "utf8=%26%2310003%3B&a=%E9&b=%26%2310003%3B",
+    "a=%E9&utf8=%E2%9C%93",
+    "utf8=other&a=1",
+  ])("charsetSentinel and interpretNumericEntities with %s", (body) => form("/sentinel", body));
+
+  it("defaultCharset for urlencoded() and text()", async () => {
+    await form("/latin1", "a=%E9");
+    await same("/text-latin1", { method: "POST", body: Buffer.from("café", "latin1"), headers: { "Content-Type": "text/plain" } }, pair);
+  });
+
+  it.each([
+    ['{"ok":1}', "application/json"],
+    ['{"forbidden":1}', "application/json"],
+    ['{"forbidden typed":1}', "application/json"],
+    ['{"ok":1}', "application/json; charset=utf-16le"],
+  ])("verify with %s as %s", (body, type) =>
+    same("/verify", { method: "POST", body: type.includes("16") ? Buffer.from(body, "utf16le") : body, headers: { "Content-Type": type } }, pair));
+
+  it("verify of raw() gets no charset, and reviver transforms values", async () => {
+    await same("/raw-verify", { method: "POST", body: "abc", headers: { "Content-Type": "application/octet-stream" } }, pair);
+    await same("/reviver", { method: "POST", body: '{"n":21,"m":[{"n":1}]}', headers: { "Content-Type": "application/json" } }, pair);
+  });
+
+  it("invalid options throw like body-parser", () => {
+    const throwsSame = (create: (k: any) => unknown) => {
+      const message = (kind: Kind) => {
+        try {
+          create(kit(kind));
+          return "no error";
+        } catch (error) {
+          return (error as Error).constructor.name + ": " + (error as Error).message;
+        }
+      };
+      expect(message("pype")).toBe(message("express"));
+    };
+    throwsSame((k) => k.urlencoded({ defaultCharset: "utf-16" }));
+    throwsSame((k) => k.urlencoded({ parameterLimit: 0 }));
+    throwsSame((k) => k.urlencoded({ extended: true, depth: -1 }));
+    throwsSame((k) => k.json({ verify: "nope" }));
+  });
+
+  it.each([...NESTED, "", "a", "a=1&a=2", "%zz=1", "a=%zz", "a=b=c", "a[]=1&a[]=2&a[]=3&a[]=4"])(
+    "req.query with every query parser setting for ?%s",
+    async (query) => {
+      for (const p of Object.values(queryPairs)) await same(`/q?${query}`, {}, p);
+    },
+  );
+
+  it("req.query without a question mark", async () => {
+    for (const p of Object.values(queryPairs)) await same("/q", {}, p);
+  });
+
+  it("an unknown query parser throws like Express", () => {
+    expect(() => new Pype().set("query parser", "fancy")).toThrow("unknown value for query parser function: fancy");
+    expect(() => express().set("query parser", "fancy")).toThrow("unknown value for query parser function: fancy");
+  });
+
+  it("a custom query parser gets the raw query string, null without one", async () => {
+    const seen: Record<Kind, unknown[]> = { express: [], pype: [] };
+    const custom = await startPair((app, kind) => {
+      app.set("query parser", (query: string | null) => {
+        seen[kind].push(query);
+        return { custom: query };
+      });
+      app.get("/q", (req: any, res: any) => res.json(req.query));
+    });
+    await same("/q?a=1&b", {}, custom);
+    await same("/q", {}, custom);
+    await same("/q?", {}, custom);
+    await Promise.all([custom.express.close(), custom.pype.close()]);
+    expect(seen.pype).toEqual(["a=1&b", null, ""]);
+    expect(seen.express).toEqual(seen.pype);
+  });
+
+  it("fuzzed nested forms and queries", () => {
+    const piece = fc.constantFrom("a", "b", "0", "1", "[", "]", "[]", "=", "&", "%5B", "%5D", "x", "__proto__", ".");
+    return fc.assert(
+      fc.asyncProperty(fc.array(piece, { maxLength: 12 }).map((p) => p.join("")), async (value) => {
+        await form("/extended", value);
+        await same(`/q?${value}`, {}, queryPairs.extended!);
+      }),
+      { numRuns: RUNS },
+    );
+  });
+});
+
+describe("app.param() and route errors match Express", () => {
+  let pair: Pair;
+
+  beforeAll(async () => {
+    pair = await startPair((app, kind) => {
+      const k = kit(kind);
+      const log = (req: any, entry: string) => (req.log ??= []).push(entry);
+      const reply = (req: any, res: any) => res.json({ params: req.params, log: req.log ?? [], user: req.user ?? null });
+
+      app.param("id", (req: any, _res: any, next: any, value: string, name: string) => {
+        log(req, `id:${value}:${name}`);
+        if (value === "boom") return next(Object.assign(new Error("bad id"), { status: 400 }));
+        if (value === "skip") return next("route");
+        if (value === "throw") throw Object.assign(new Error("thrown"), { status: 422 });
+        req.user = { id: value };
+        next();
+      });
+      app.param("id", (req: any, _res: any, next: any, value: string) => {
+        log(req, `id2:${value}`);
+        next();
+      });
+      app.param("slug", async (req: any, _res: any, _next: any, value: string) => {
+        log(req, `slug:${value}`);
+        if (value === "reject") throw Object.assign(new Error("rejected"), { status: 409 });
+        if (value === "plain-reject") return Promise.reject();
+        req.params.slug = value.toUpperCase();
+        _next();
+      });
+      app.param(["a", "b"], (req: any, _res: any, next: any, value: string, name: string) => {
+        log(req, `${name}=${value}`);
+        next();
+      });
+
+      app.get("/users/:id", (req: any, _res: any, next: any) => {
+        log(req, "first route");
+        next();
+      });
+      app.get("/users/:id", reply);
+      app.get("/users/:id", (_req: any, res: any) => res.send("route after skip"));
+      app.get("/users/:id/again/:id2", reply);
+      app.get("/posts/:slug", reply);
+      app.get("/pair/:a/:b", reply);
+      app.get("/no-params", reply);
+      // Express 5 writes optional params as {/:id}, Pype as :id?.
+      app.get(kind === "express" ? "/optional{/:id}" : "/optional/:id?", reply);
+
+      const router = k.Router();
+      router.param("rid", (req: any, _res: any, next: any, value: string) => {
+        log(req, `rid:${value}`);
+        next();
+      });
+      router.get("/:rid", reply);
+      router.get("/:rid/:id", reply);
+      app.use("/sub", router);
+
+      // A pending error skips routes, their error handlers included.
+      app.use("/pending", (_req: any, _res: any, next: any) => next(Object.assign(new Error("early"), { status: 418 })));
+      app.get("/pending", reply, (err: any, _req: any, res: any, _next: any) => res.send(`route error handler: ${err.message}`));
+      app.get(
+        "/inside",
+        () => {
+          throw Object.assign(new Error("inside"), { status: 451 });
+        },
+        (err: any, _req: any, res: any, _next: any) => res.send(`route error handler: ${err.message}`),
+      );
+
+      app.use((_req: any, res: any) => res.status(404).json({ notFound: true }));
+      app.use((err: any, req: any, res: any, _next: any) =>
+        res.status(err.status || 500).json({ error: err.message, log: req.log ?? [] }),
+      );
+    });
+  });
+
+  afterAll(async () => {
+    await Promise.all([pair.express.close(), pair.pype.close()]);
+  });
+
+  it.each([
+    "/users/42",
+    "/users/boom",
+    "/users/skip",
+    "/users/throw",
+    "/users/a%20b",
+    "/users/7/again/8",
+    "/posts/hello",
+    "/posts/reject",
+    "/posts/plain-reject",
+    "/pair/1/2",
+    "/no-params",
+    "/optional",
+    "/optional/5",
+    "/sub/r1",
+    "/sub/r1/9",
+    "/pending",
+    "/inside",
+  ])("GET %s", (path) => same(path, {}, pair));
+
+  it("param() validates its arguments like Express", () => {
+    const message = (fn: () => unknown) => {
+      try {
+        fn();
+        return "no error";
+      } catch (error) {
+        return (error as Error).message;
+      }
+    };
+    for (const args of [[""], [1], ["id"], ["id", "not a function"]] as unknown[][]) {
+      const fromPype = message(() => (new Pype().param as any)(...args));
+      const fromExpress = message(() => (express().param as any)(...args));
+      expect(fromPype).toBe(fromExpress);
+    }
+  });
+});
+
+describe("regular expression and array paths match Express", () => {
+  let pair: Pair;
+
+  beforeAll(async () => {
+    pair = await startPair((app, kind) => {
+      const k = kit(kind);
+      const reply = (req: any, res: any) =>
+        res.json({
+          params: req.params,
+          route: [req.route.path].flat().map(String),
+          path: req.path,
+          baseUrl: req.baseUrl,
+          url: req.url,
+          log: req.log ?? [],
+        });
+
+      app.param("0", (req: any, _res: any, next: any, value: string) => {
+        (req.log ??= []).push(`param 0=${value}`);
+        next();
+      });
+
+      app.get(/^\/re\/(\d+)$/, reply);
+      app.get(/\/(?<name>[a-z]+)-(\d+)/, reply);
+      app.get(/^\/opt\/(a)?(b)?$/, reply);
+      app.get(/^\/dec\/(.+)$/, reply);
+      app.post(/^\/re\/(\d+)$/, reply);
+      app.get(["/one", "/two/:id", /^\/three$/], reply);
+      app.get(["/dup", "/:any"], (req: any, _res: any, next: any) => {
+        (req.log ??= []).push("array route ran");
+        next();
+      });
+      app.get("/dup", reply);
+      app.route(/^\/chain$/).get(reply).put(reply);
+
+      app.use(/^\/mw\/(\w+)/, (req: any, res: any, next: any) => {
+        if (req.query.next) return next();
+        res.json({ params: req.params, path: req.path, baseUrl: req.baseUrl, url: req.url, log: req.log ?? [] });
+      });
+      app.use(["/multi-a", "/multi-b"], (req: any, res: any) =>
+        res.json({ baseUrl: req.baseUrl, path: req.path, params: req.params }),
+      );
+      app.use(["/twice", "/twice/inner"], (req: any, _res: any, next: any) => {
+        (req.log ??= []).push(`mounted at ${req.baseUrl}`);
+        next();
+      });
+      app.get("/twice/inner/x", reply);
+
+      const router = k.Router();
+      router.get(/^\/r-(\d+)$/, reply);
+      router.use(/^\/inner-(\w+)/, (req: any, res: any) => res.json({ baseUrl: req.baseUrl, path: req.path, params: req.params }));
+      app.use(["/routed", "/also-routed"], router);
+
+      app.get("/after-route/:id", (_req: any, _res: any, next: any) => next());
+      app.use("/after-route", (req: any, res: any) => res.json({ paramsInMiddleware: req.params }));
+
+      app.use((_req: any, res: any) => res.status(404).json({ notFound: true }));
+      app.use((err: any, _req: any, res: any, _next: any) => res.status(err.status || 500).json({ error: err.message }));
+    });
+  });
+
+  afterAll(async () => {
+    await Promise.all([pair.express.close(), pair.pype.close()]);
+  });
+
+  it.each([
+    "/re/42",
+    "/re/42/",
+    "/re/x",
+    "/x/abc-12/y",
+    "/opt/",
+    "/opt/a",
+    "/opt/b",
+    "/opt/ab",
+    "/dec/a%20b%2Fc",
+    "/dec/%ZZ",
+    "/one",
+    "/two/5",
+    "/three",
+    "/dup",
+    "/other",
+    "/chain",
+    "/mw/hello/rest?q=1",
+    "/mw/hello",
+    "/mw/hello.json",
+    "/mw/hello?next=1",
+    "/multi-a/x",
+    "/multi-b",
+    "/twice/inner/x",
+    "/routed/r-7",
+    "/also-routed/r-8",
+    "/routed/inner-abc/deep",
+    "/after-route/9",
+  ])("GET %s", (path) => same(path, {}, pair));
+
+  it.each(["/re/42", "/chain", "/one", "/routed/r-7"])("HEAD, POST, PUT and OPTIONS %s", async (path) => {
+    for (const method of ["HEAD", "POST", "PUT", "OPTIONS"]) await same(path, { method }, pair);
+  });
+
+  it("mounting a router on a regular expression is reported, not silently ignored", () => {
+    expect(() => new Pype().use(/^\/x/, new PypeRouter())).toThrow("Mounting a router on a regular expression is not supported");
+  });
+});
+
+describe("view rendering matches Express", () => {
+  const views = mkdtempSync(join(tmpdir(), "pype-views-"));
+  const moreViews = mkdtempSync(join(tmpdir(), "pype-views-more-"));
+  const constructed: Record<Kind, string[]> = { express: [], pype: [] };
+  let pair: Pair;
+
+  /** A tiny engine: replaces {{key}} with the option, and {{settings.x}} with a setting. */
+  const tpl = (path: string, options: Record<string, any>, callback: (err: Error | null, html?: string) => void) => {
+    const { readFileSync } = require("fs") as typeof import("fs");
+    const source = readFileSync(path, "utf8");
+    if (source.includes("{{fail}}")) return callback(new Error("template failed"));
+    callback(null, source.replace(/\{\{([\w.]+)\}\}/g, (_: string, key: string) => {
+      const value = key.split(".").reduce((obj: any, part) => obj?.[part], options);
+      return String(value ?? "");
+    }));
+  };
+
+  beforeAll(async () => {
+    mkdirSync(join(views, "users"));
+    mkdirSync(join(views, "blog"));
+    writeFileSync(join(views, "page.tpl"), "<h1>{{title}}</h1><p>{{who}} {{shared}}</p>");
+    writeFileSync(join(views, "users", "show.tpl"), "user {{name}}");
+    writeFileSync(join(views, "blog", "index.tpl"), "blog index");
+    writeFileSync(join(views, "broken.tpl"), "{{fail}}");
+    writeFileSync(join(views, "settings.tpl"), "env={{settings.view engine}} cache={{cache}}");
+    writeFileSync(join(views, "other.html"), "html engine {{title}}");
+    writeFileSync(join(moreViews, "extra.tpl"), "from the second directory");
+
+    pair = await startPair((app, kind) => {
+      class CountingView extends (kind === "express" ? require("express/lib/view") : View) {
+        constructor(name: string, options: any) {
+          super(name, options);
+          constructed[kind].push(name);
+        }
+      }
+
+      app.engine("tpl", tpl);
+      app.engine(".html", (path: string, options: any, callback: any) => setTimeout(() => tpl(path, options, callback), 1));
+      app.set("views", [views, moreViews]);
+      app.set("view engine", "tpl");
+      app.set("view", CountingView);
+      app.locals.shared = "from app.locals";
+      app.locals.who = "app";
+
+      app.get("/page", (_req: any, res: any) => res.render("page", { title: "Hello" }));
+      app.get("/locals", (_req: any, res: any) => {
+        res.locals.who = "res.locals";
+        res.render("page", { title: "Locals" });
+      });
+      app.get("/override", (_req: any, res: any) => {
+        res.locals.who = "res.locals";
+        res.render("page", { title: "Options win", who: "options" });
+      });
+      app.get("/nested", (_req: any, res: any) => res.render("users/show", { name: "ada" }));
+      app.get("/with-ext", (_req: any, res: any) => res.render("page.tpl", { title: "Ext" }));
+      app.get("/index", (_req: any, res: any) => res.render("blog"));
+      app.get("/second-dir", (_req: any, res: any) => res.render("extra"));
+      app.get("/html", (_req: any, res: any) => res.render("other.html", { title: "Async engine" }));
+      app.get("/missing", (_req: any, res: any) => res.render("nope"));
+      app.get("/broken", (_req: any, res: any) => res.render("broken"));
+      app.get("/settings", (_req: any, res: any) => res.render("settings"));
+      app.get("/cached", (_req: any, res: any) => res.render("users/show", { name: "cached", cache: true }));
+      app.get("/callback", (_req: any, res: any) => {
+        let after = "before";
+        res.render("page", { title: "Callback" }, (_err: Error | null, html: string) => res.type("text").send(`${after}|${html}`));
+        after = "after";
+      });
+      app.get("/callback-error", (_req: any, res: any) =>
+        res.render("nope", (err: Error) => res.status(500).send(`callback got: ${err.message.replace(views, "VIEWS").replace(moreViews, "MORE")}`)),
+      );
+      app.get("/app-render", (_req: any, res: any) =>
+        app.render("page", { title: "app.render" }, (err: Error | null, html: string) => (err ? res.status(500).end() : res.send(html))),
+      );
+      app.get("/no-engine", (_req: any, res: any) => {
+        app.set("view engine", undefined);
+        try {
+          res.render("page");
+        } finally {
+          app.set("view engine", "tpl");
+        }
+      });
+      app.get("/unknown-module", (_req: any, res: any) => res.render("page.fast-check"));
+      app.get("/missing-module", (_req: any, res: any) => res.render("page.definitely-not-installed"));
+
+      app.use((err: any, _req: any, res: any, _next: any) =>
+        res.status(500).json({ error: String(err.message).replace(views, "VIEWS").replace(moreViews, "MORE").split("\n")[0], hasView: Boolean(err.view) }),
+      );
+    });
+  });
+
+  afterAll(async () => {
+    await Promise.all([pair.express.close(), pair.pype.close()]);
+    rmSync(views, { recursive: true, force: true });
+    rmSync(moreViews, { recursive: true, force: true });
+  });
+
+  it.each([
+    "/page",
+    "/locals",
+    "/override",
+    "/nested",
+    "/with-ext",
+    "/index",
+    "/second-dir",
+    "/html",
+    "/missing",
+    "/broken",
+    "/settings",
+    "/callback",
+    "/callback-error",
+    "/app-render",
+    "/no-engine",
+    "/unknown-module",
+    "/missing-module",
+  ])("GET %s", (path) => same(path, {}, pair));
+
+  it("HEAD of a rendered page", () => same("/page", { method: "HEAD" }, pair));
+
+  it("caches views when asked, like Express", async () => {
+    constructed.express.length = 0;
+    constructed.pype.length = 0;
+    for (let i = 0; i < 3; i++) await same("/cached", {}, pair);
+    await same("/nested", {}, pair);
+    expect(constructed.pype).toEqual(constructed.express);
+    expect(constructed.pype.filter((name) => name === "users/show")).toHaveLength(2);
+  });
+
+  it("app.engine() requires a function and view cache follows env, like Express", () => {
+    expect(() => new Pype().engine("x", "nope" as any)).toThrow("callback function required");
+    expect(() => (express() as any).engine("x", "nope")).toThrow("callback function required");
+    expect(new Pype({ env: "production" }).enabled("view cache")).toBe(true);
+    expect(new Pype({ env: "development" }).enabled("view cache")).toBe(false);
+    expect(new Pype().get("views")).toBe(express().get("views"));
+  });
 });

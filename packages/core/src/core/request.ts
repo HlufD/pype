@@ -35,8 +35,8 @@ export interface Request extends Express.Request {}
 
 /** The route that matched a request, exposed as `req.route`. */
 export interface RouteInfo {
-  /** Route path as written in its definition, e.g. `/users/:id`. */
-  path: string;
+  /** Route path as written in its definition, e.g. `/users/:id`, a RegExp, or an array of them. */
+  path: string | RegExp | Array<string | RegExp>;
   /** Lower-case HTTP method of the request. */
   method: string;
 }

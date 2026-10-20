@@ -429,6 +429,22 @@ function matchContentType(actual: string, pattern: string): boolean {
  * `setCharset`: the type is lower-cased and parameters are sorted.
  */
 function setCharset(type: string, charset: string): string {
+  // res.send() always asks for utf-8 and responses use a handful of types,
+  // so those results are cached by type.
+  if (charset !== "utf-8") return computeCharset(type, charset);
+  const cached = utf8Cache.get(type);
+  if (cached !== undefined) return cached;
+
+  const result = computeCharset(type, charset);
+  if (utf8Cache.size >= 256) utf8Cache.clear();
+  utf8Cache.set(type, result);
+  return result;
+}
+
+/** Results of {@link setCharset} for utf-8, by type. */
+const utf8Cache = new Map<string, string>();
+
+function computeCharset(type: string, charset: string): string {
   // Fast path for the common case, e.g. what res.json() and res.type() set.
   if (type.endsWith(`; charset=${charset}`) && SIMPLE_TYPE.test(type.slice(0, -charset.length - 10))) return type;
 

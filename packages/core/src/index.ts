@@ -1,12 +1,14 @@
 export { Pype } from "./core/server";
 export { PypeRouter, RouteBuilder } from "./core/router";
-export type { HandlerParam, UseHandler } from "./core/router";
+export type { HandlerParam, ParamHandler, PathParam, UseHandler } from "./core/router";
 export { Request } from "./core/request";
 export type { RouteInfo } from "./core/request";
 export { Response } from "./core/response";
 export type { SendFileOptions } from "./core/response";
+export { View } from "./core/view";
+export type { Engine, ViewOptions } from "./core/view";
 export { json, urlencoded, text, raw } from "./middlewares/body-parser";
-export type { BodyParserOptions, JsonOptions } from "./middlewares/body-parser";
+export type { BodyParserOptions, JsonOptions, UrlencodedOptions } from "./middlewares/body-parser";
 export type { CookieOptions } from "./types/cookie-options";
 export type { NextFunction } from "./types/next-function";
 export type { AnyHandler, ErrorMiddleware, Middleware } from "./types/middleware";

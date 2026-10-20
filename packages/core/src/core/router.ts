@@ -17,17 +17,24 @@ let version = 0;
 /** Current registration counter, compared by apps to detect changes. */
 export const routingVersion = () => version;
 
+/** A route or mount path: a pattern string, a regular expression, or an array of them. */
+export type PathParam = string | RegExp | Array<string | RegExp>;
+
 /** Something registered on a router, in registration order. */
 type StackEntry =
-  | { type: "use"; path: string; handlers: AnyHandler[] }
-  | { type: "router"; path: string; router: PypeRouter }
-  | { type: "route"; path: string; methods: HTTP_METHODS[]; handlers: AnyHandler[] };
+  | { type: "use"; path: PathParam; handlers: AnyHandler[] }
+  | { type: "router"; path: PathParam; router: PypeRouter }
+  | { type: "route"; path: PathParam; methods: HTTP_METHODS[]; handlers: AnyHandler[] };
 
 /** A middleware function with its resolved mount path. */
 export interface MiddlewareLayer {
   kind: "middleware";
-  /** Full mount path, the middleware runs for this path and below it. */
+  /** Full mount path, the middleware runs for this path and below it. With `pattern`, the router's mount path. */
   path: string;
+  /** A regular expression mount path, matched against the path below `path`. */
+  pattern?: RegExp;
+  /** Shared by the layers of one array mount path, so the middleware runs once per request. */
+  group?: object;
   /** The middleware or error middleware. */
   handle: AnyHandler;
   /** Routers this layer belongs to, outermost first. */
@@ -37,10 +44,14 @@ export interface MiddlewareLayer {
 /** A route with its resolved paths. */
 export interface RouteLayer {
   kind: "route";
-  /** Path including every mount prefix, used for matching. */
+  /** Path including every mount prefix, used for matching. With `pattern`, the router's mount path. */
   fullPath: string;
-  /** Path as written in the route definition, exposed as `req.route.path`. */
-  routePath: string;
+  /** Path as written in the route definition, exposed as `req.route.path`; a RegExp or array when the route was defined with one. */
+  routePath: PathParam;
+  /** A regular expression route path, matched against the path below `fullPath`. */
+  pattern?: RegExp;
+  /** Shared by the layers of one array path, so the route runs once per request. */
+  group?: object;
   /** Mount path of the route's router, exposed as `req.baseUrl`. */
   baseUrl: string;
   /** HTTP methods the route responds to. */
@@ -49,10 +60,31 @@ export interface RouteLayer {
   handlers: AnyHandler[];
   /** Routers this layer belongs to, outermost first. */
   routers: PypeRouter[];
+  /** Parameter names in the route path, in order; `"*"` for the wildcard. */
+  keys: string[];
+}
+
+/**
+ * A `param()` callback: runs before the route handlers of routes with that
+ * parameter, like Express's `app.param()`.
+ */
+export type ParamHandler = (req: any, res: any, next: (err?: any) => void, value: string, name: string) => any;
+
+/**
+ * Marks where a mounted router's layers end. Express answers automatic
+ * OPTIONS requests when a router is done, from the routes it saw.
+ */
+export interface RouterEndLayer {
+  kind: "end";
+  /** The router whose layers end here. */
+  router: PypeRouter;
+  /** Routers this marker belongs to, outermost first, including `router`. */
+  routers: PypeRouter[];
+  group?: object;
 }
 
 /** One step of the request pipeline. */
-export type Layer = MiddlewareLayer | RouteLayer;
+export type Layer = MiddlewareLayer | RouteLayer | RouterEndLayer;
 
 /** Chainable route definition returned by {@link PypeRouter.route}. */
 export class RouteBuilder {
@@ -61,7 +93,7 @@ export class RouteBuilder {
    * @param router - Router the routes are added to.
    */
   constructor(
-    private path: string,
+    private path: PathParam,
     private router: PypeRouter,
   ) {}
 
@@ -121,23 +153,52 @@ export class RouteBuilder {
 export class PypeRouter {
   private readonly stack: StackEntry[] = [];
 
+  /** `param()` callbacks by parameter name. */
+  readonly params: Record<string, ParamHandler[]> = Object.create(null);
+
+  /** Whether `param()` was called, checked on every request instead of counting `params`. */
+  hasParams = false;
+
+  /**
+   * Adds a callback for a route parameter, like Express's `router.param()`.
+   * It runs before the handlers of this router's routes that have the
+   * parameter, once per request and value, with
+   * `(req, res, next, value, name)`. `next(err)` and rejected promises go to
+   * error middleware, `next("route")` skips the route.
+   *
+   * @throws When the name isn't a string or `fn` isn't a function, with
+   * Express's messages.
+   */
+  param(name: string, fn: ParamHandler): this {
+    if (!name) throw new TypeError("argument name is required");
+    if (typeof name !== "string") throw new TypeError("argument name must be a string");
+    if (!fn) throw new TypeError("argument fn is required");
+    if (typeof fn !== "function") throw new TypeError("argument fn must be a function");
+
+    (this.params[name] ??= []).push(fn);
+    this.hasParams = true;
+    return this;
+  }
+
   /**
    * Adds middleware, error middleware or sub-routers. With a path, they only
    * run for that path and below it, and see `req.url`, `req.path` and
    * `req.baseUrl` relative to it.
    *
-   * @param path - Optional mount path, defaults to `/`.
+   * @param path - Optional mount path, defaults to `/`: a string, a regular
+   * expression (matched at the start, ending at a `/`), or an array of them.
    * @param handlers - Middleware functions, routers, or arrays of them.
-   * @throws When no handler is given or a handler isn't a function or router.
+   * @throws When no handler is given, a handler isn't a function or router,
+   * or a router is mounted on a regular expression.
    */
   use(...handlers: Array<Middleware | Middleware[]>): this;
-  use(path: string, ...handlers: Array<Middleware | Middleware[] | PypeRouter>): this;
+  use(path: PathParam, ...handlers: Array<Middleware | Middleware[] | PypeRouter>): this;
   use(...handlers: ErrorMiddleware[]): this;
-  use(path: string, ...handlers: ErrorMiddleware[]): this;
+  use(path: PathParam, ...handlers: ErrorMiddleware[]): this;
   use(...handlers: UseHandler[]): this;
-  use(path: string, ...handlers: UseHandler[]): this;
-  use(...args: Array<string | UseHandler>): this {
-    const path = typeof args[0] === "string" ? (args.shift() as string) : "/";
+  use(path: PathParam, ...handlers: UseHandler[]): this;
+  use(...args: Array<PathParam | UseHandler>): this {
+    const path = isPathArgument(args[0]) ? (args.shift() as PathParam) : "/";
     const handlers = (args as unknown[]).flat(Infinity) as Array<
       AnyHandler | PypeRouter
     >;
@@ -154,6 +215,9 @@ export class PypeRouter {
 
     for (const handler of handlers) {
       if (handler instanceof PypeRouter) {
+        if ([path].flat().some((each) => each instanceof RegExp)) {
+          throw new TypeError("Mounting a router on a regular expression is not supported");
+        }
         flush();
         this.stack.push({ type: "router", path, router: handler });
       } else if (typeof handler === "function") {
@@ -176,9 +240,9 @@ export class PypeRouter {
    * @param path - Route path, e.g. `/users/:id`.
    * @param handlers - Handlers or arrays of handlers, run in order.
    */
-  all(path: string, ...handlers: RouteHandler[]): this;
-  all(path: string, ...handlers: HandlerParam[]): this;
-  all(path: string, ...handlers: HandlerParam[]): this {
+  all(path: PathParam, ...handlers: RouteHandler[]): this;
+  all(path: PathParam, ...handlers: HandlerParam[]): this;
+  all(path: PathParam, ...handlers: HandlerParam[]): this {
     return this.addRoute(path, ALL_METHODS, handlers);
   }
 
@@ -188,9 +252,9 @@ export class PypeRouter {
    * @param path - Route path, e.g. `/users/:id`.
    * @param handlers - Handlers or arrays of handlers, run in order.
    */
-  get(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
-  get(path: string, ...handlers: HandlerParam[]): this;
-  get(path: string, ...handlers: HandlerParam[]): this {
+  get(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
+  get(path: PathParam, ...handlers: HandlerParam[]): this;
+  get(path: PathParam, ...handlers: HandlerParam[]): this {
     return this.addRoute(path, [HTTP_METHODS.GET], handlers);
   }
 
@@ -200,9 +264,9 @@ export class PypeRouter {
    * @param path - Route path, e.g. `/users/:id`.
    * @param handlers - Handlers or arrays of handlers, run in order.
    */
-  post(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
-  post(path: string, ...handlers: HandlerParam[]): this;
-  post(path: string, ...handlers: HandlerParam[]): this {
+  post(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
+  post(path: PathParam, ...handlers: HandlerParam[]): this;
+  post(path: PathParam, ...handlers: HandlerParam[]): this {
     return this.addRoute(path, [HTTP_METHODS.POST], handlers);
   }
 
@@ -212,9 +276,9 @@ export class PypeRouter {
    * @param path - Route path, e.g. `/users/:id`.
    * @param handlers - Handlers or arrays of handlers, run in order.
    */
-  put(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
-  put(path: string, ...handlers: HandlerParam[]): this;
-  put(path: string, ...handlers: HandlerParam[]): this {
+  put(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
+  put(path: PathParam, ...handlers: HandlerParam[]): this;
+  put(path: PathParam, ...handlers: HandlerParam[]): this {
     return this.addRoute(path, [HTTP_METHODS.PUT], handlers);
   }
 
@@ -224,9 +288,9 @@ export class PypeRouter {
    * @param path - Route path, e.g. `/users/:id`.
    * @param handlers - Handlers or arrays of handlers, run in order.
    */
-  delete(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
-  delete(path: string, ...handlers: HandlerParam[]): this;
-  delete(path: string, ...handlers: HandlerParam[]): this {
+  delete(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
+  delete(path: PathParam, ...handlers: HandlerParam[]): this;
+  delete(path: PathParam, ...handlers: HandlerParam[]): this {
     return this.addRoute(path, [HTTP_METHODS.DELETE], handlers);
   }
 
@@ -236,9 +300,9 @@ export class PypeRouter {
    * @param path - Route path, e.g. `/users/:id`.
    * @param handlers - Handlers or arrays of handlers, run in order.
    */
-  patch(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
-  patch(path: string, ...handlers: HandlerParam[]): this;
-  patch(path: string, ...handlers: HandlerParam[]): this {
+  patch(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
+  patch(path: PathParam, ...handlers: HandlerParam[]): this;
+  patch(path: PathParam, ...handlers: HandlerParam[]): this {
     return this.addRoute(path, [HTTP_METHODS.PATCH], handlers);
   }
 
@@ -248,9 +312,9 @@ export class PypeRouter {
    * @param path - Route path, e.g. `/users/:id`.
    * @param handlers - Handlers or arrays of handlers, run in order.
    */
-  head(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
-  head(path: string, ...handlers: HandlerParam[]): this;
-  head(path: string, ...handlers: HandlerParam[]): this {
+  head(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
+  head(path: PathParam, ...handlers: HandlerParam[]): this;
+  head(path: PathParam, ...handlers: HandlerParam[]): this {
     return this.addRoute(path, [HTTP_METHODS.HEAD], handlers);
   }
 
@@ -260,9 +324,9 @@ export class PypeRouter {
    * @param path - Route path, e.g. `/users/:id`.
    * @param handlers - Handlers or arrays of handlers, run in order.
    */
-  options(path: string, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
-  options(path: string, ...handlers: HandlerParam[]): this;
-  options(path: string, ...handlers: HandlerParam[]): this {
+  options(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
+  options(path: PathParam, ...handlers: HandlerParam[]): this;
+  options(path: PathParam, ...handlers: HandlerParam[]): this {
     return this.addRoute(path, [HTTP_METHODS.OPTIONS], handlers);
   }
 
@@ -271,7 +335,7 @@ export class PypeRouter {
    *
    * @example router.route("/users").get(list).post(create)
    */
-  route(path: string) {
+  route(path: PathParam) {
     return new RouteBuilder(path, this);
   }
 
@@ -287,24 +351,45 @@ export class PypeRouter {
     const layers: Layer[] = [];
 
     for (const entry of this.stack) {
-      const path = joinPaths(basePath, entry.path);
+      const paths = [entry.path].flat();
+      // The layers of one array path share a group and run once per request.
+      const group = paths.length > 1 ? {} : undefined;
 
-      if (entry.type === "use") {
-        for (const handle of entry.handlers) {
-          layers.push({ kind: "middleware", path, handle, routers: chain });
-        }
-      } else if (entry.type === "router") {
-        layers.push(...entry.router.compile(path, chain));
-      } else {
-        layers.push({
-          kind: "route",
-          fullPath: path,
-          routePath: entry.path,
-          baseUrl: trimSlashes(basePath),
-          methods: entry.methods,
-          handlers: [...entry.handlers],
-          routers: chain,
+      if (entry.type === "router") {
+        // Each mount path gets its own copy of the router's layers; copy i of
+        // every layer shares a group, so only the first matching mount runs it.
+        const copies = paths.map((path) => [
+          ...entry.router.compile(joinPaths(basePath, path as string), chain),
+          { kind: "end", router: entry.router, routers: [...chain, entry.router] } as RouterEndLayer,
+        ]);
+        copies[0].forEach((_, index) => {
+          const shared = group && {};
+          for (const copy of copies) layers.push(shared ? { ...copy[index], group: shared } : copy[index]);
         });
+        continue;
+      }
+
+      for (const path of paths) {
+        if (entry.type === "use") {
+          const mount = path instanceof RegExp ? trimSlashes(basePath) : joinPaths(basePath, path);
+          const pattern = path instanceof RegExp ? path : undefined;
+          for (const handle of entry.handlers) {
+            layers.push({ kind: "middleware", path: mount, pattern, handle, routers: chain, group });
+          }
+        } else {
+          layers.push({
+            kind: "route",
+            fullPath: path instanceof RegExp ? trimSlashes(basePath) : joinPaths(basePath, path),
+            routePath: entry.path,
+            pattern: path instanceof RegExp ? path : undefined,
+            baseUrl: trimSlashes(basePath),
+            methods: entry.methods,
+            handlers: [...entry.handlers],
+            routers: chain,
+            keys: path instanceof RegExp ? [] : paramKeys(path),
+            group,
+          });
+        }
       }
     }
 
@@ -316,7 +401,7 @@ export class PypeRouter {
    *
    * @throws When no handlers are given or one isn't a function.
    */
-  private addRoute(path: string, methods: HTTP_METHODS[], handlers: HandlerParam[]) {
+  private addRoute(path: PathParam, methods: HTTP_METHODS[], handlers: HandlerParam[]) {
     const flat = (handlers as unknown[]).flat(Infinity) as AnyHandler[];
 
     if (flat.length === 0 || flat.some((h) => typeof h !== "function")) {
@@ -327,6 +412,27 @@ export class PypeRouter {
     version++;
     return this;
   }
+}
+
+/**
+ * Whether the first `use()` argument is a mount path rather than a handler,
+ * the test Express uses: a string, a RegExp, or an array whose first leaf
+ * isn't a function or router.
+ */
+function isPathArgument(arg: unknown): boolean {
+  let first = arg;
+  while (Array.isArray(first) && first.length > 0) first = first[0];
+  return typeof first === "string" || first instanceof RegExp;
+}
+
+/** Parameter names of a route path: `/users/:id/*` gives `["id", "*"]`. */
+function paramKeys(path: string): string[] {
+  const keys: string[] = [];
+  for (const segment of path.split("/")) {
+    if (segment.startsWith(":")) keys.push(segment.slice(1).replace(/\?$/, ""));
+    else if (segment.endsWith("*")) keys.push("*");
+  }
+  return keys;
 }
 
 /** Collapses repeated slashes and drops trailing ones. */

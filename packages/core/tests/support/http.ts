@@ -52,6 +52,9 @@ export async function start(app: Pype): Promise<TestServer> {
           path,
           method: options.method ?? "GET",
           headers: options.headers,
+          // A fresh connection per request, so a socket a test made the
+          // server destroy is never reused by the next request.
+          agent: false,
         },
         (res) => {
           const chunks: Buffer[] = [];

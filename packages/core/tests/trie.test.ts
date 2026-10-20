@@ -1,4 +1,5 @@
 import { describe, it, beforeEach, expect } from "vitest";
+import fc from "fast-check";
 import { RouteNode } from "../src/utils/Trie-Route";
 import { HTTP_METHODS } from "../src/enums/methods.enum";
 
@@ -787,4 +788,171 @@ describe("Matching – param decoding", () => {
       expect(result!.error!.message).toMatch(/^Failed to decode param '/);
     },
   );
+});
+
+/** Runs of the router properties, raise with FUZZ_RUNS. */
+const RUNS = Number(process.env.FUZZ_RUNS ?? 500);
+
+/** A route segment: a static name, a param or the trailing wildcard. */
+type Segment = { kind: 0; value: string } | { kind: 1 } | { kind: 2 };
+
+/** Route path of a pattern; params are named by position so names never conflict. */
+const pathOf = (pattern: Segment[]) =>
+  "/" + pattern.map((s, i) => (s.kind === 0 ? s.value : s.kind === 1 ? `:p${i}` : "*")).join("/");
+
+/**
+ * The documented rule as a reference: at each segment a static match beats a
+ * param, which beats the wildcard, with backtracking. That is the matching
+ * pattern whose kinds are smallest position by position. A wildcard needs a
+ * non-empty rest, except at the root where `/*` also matches `/`.
+ */
+function reference(patterns: Segment[][], segments: string[]): Segment[] | null {
+  const matches = patterns.filter((pattern) => {
+    for (let i = 0; i < pattern.length; i++) {
+      const s = pattern[i];
+      if (s.kind === 2) return i === 0 || segments.length > i;
+      if (i >= segments.length) return false;
+      if (s.kind === 0 && s.value !== segments[i]) return false;
+    }
+    return pattern.length === segments.length;
+  });
+
+  const kinds = (pattern: Segment[]) => pattern.map((s) => s.kind);
+  matches.sort((a, b) => {
+    const [x, y] = [kinds(a), kinds(b)];
+    for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return x[i] - y[i];
+    return x.length - y.length;
+  });
+  return matches[0] ?? null;
+}
+
+describe("Matching – properties", () => {
+  const staticSegment = fc.constantFrom("a", "b", "ab", "users");
+  const segment: fc.Arbitrary<Segment> = fc.oneof(
+    { weight: 3, arbitrary: staticSegment.map((value) => ({ kind: 0 as const, value })) },
+    { weight: 2, arbitrary: fc.constant({ kind: 1 as const }) },
+  );
+  const pattern = fc
+    .tuple(fc.array(segment, { minLength: 1, maxLength: 4 }), fc.boolean())
+    .map(([segments, wildcard]) => (wildcard ? [...segments, { kind: 2 as const }] : segments));
+  const patterns = fc.uniqueArray(fc.oneof(pattern, fc.constant([{ kind: 2 as const }] as Segment[])), {
+    minLength: 1,
+    maxLength: 25,
+    selector: pathOf,
+  });
+  const requestPath = fc.array(fc.constantFrom("a", "b", "ab", "users", "x", "ab%20c"), { maxLength: 6 });
+
+  it("always picks the route the precedence rules choose, with backtracking", () => {
+    fc.assert(
+      fc.property(patterns, fc.array(requestPath, { minLength: 1, maxLength: 20 }), (routes, paths) => {
+        const router = new RouteNode({ ignoreDuplicateSlashes: true, ignoreTrailingSlash: true });
+        for (const route of routes) router.register(pathOf(route), HTTP_METHODS.GET, [() => {}], { path: pathOf(route) });
+
+        for (const segments of paths) {
+          const expected = reference(routes, segments);
+          const match = router.match("/" + segments.join("/"), HTTP_METHODS.GET);
+          expect(match?.route.path ?? null).toBe(expected ? pathOf(expected) : null);
+        }
+      }),
+      { numRuns: RUNS },
+    );
+  });
+
+  it("captures params and the wildcard rest from the request path", () => {
+    fc.assert(
+      fc.property(patterns, requestPath, (routes, segments) => {
+        const router = new RouteNode({ ignoreDuplicateSlashes: true, ignoreTrailingSlash: true });
+        for (const route of routes) router.register(pathOf(route), HTTP_METHODS.GET, [() => {}], { path: pathOf(route) });
+
+        const expected = reference(routes, segments);
+        const match = router.match("/" + segments.join("/"), HTTP_METHODS.GET);
+        if (!expected) {
+          expect(match).toBeNull();
+          return;
+        }
+
+        const params: Record<string, string> = {};
+        expected.forEach((s, i) => {
+          if (s.kind === 1) params[`p${i}`] = decodeURIComponent(segments[i]);
+          if (s.kind === 2) params["*"] = decodeURIComponent(segments.slice(i).join("/"));
+        });
+        expect(match!.params).toEqual(params);
+      }),
+      { numRuns: RUNS },
+    );
+  });
+});
+
+describe("Matching – scale", () => {
+  it("matches each of 10,000 mixed routes and stays fast", () => {
+    const router = new RouteNode({ ignoreDuplicateSlashes: true, ignoreTrailingSlash: true });
+    const routes: [string, string, Record<string, string>][] = [];
+
+    for (let i = 0; i < 10_000; i++) {
+      const group = `g${i % 100}`;
+      if (i % 4 === 0) routes.push([`/${group}/static${i}`, `/${group}/static${i}`, {}]);
+      else if (i % 4 === 1) routes.push([`/${group}/items${i}/:id`, `/${group}/items${i}/42`, { id: "42" }]);
+      else if (i % 4 === 2) routes.push([`/${group}/deep${i}/:id/sub/:sub`, `/${group}/deep${i}/7/sub/x`, { id: "7", sub: "x" }]);
+      else routes.push([`/${group}/files${i}/*`, `/${group}/files${i}/a/b.txt`, { "*": "a/b.txt" }]);
+    }
+
+    for (const [path] of routes) router.register(path, HTTP_METHODS.GET, [() => {}], { path });
+
+    const started = performance.now();
+    for (let round = 0; round < 5; round++) {
+      for (const [path, request, params] of routes) {
+        const match = router.match(request, HTTP_METHODS.GET);
+        if (match?.route.path !== path) expect(match?.route.path).toBe(path);
+        if (round === 0) expect(match!.params).toEqual(params);
+      }
+    }
+    const perLookup = (performance.now() - started) / (routes.length * 5);
+
+    expect(router.match("/g1/missing", HTTP_METHODS.GET)).toBeNull();
+    // Generous bound: a linear scan of 10k routes would be orders of magnitude slower.
+    expect(perLookup).toBeLessThan(0.05);
+  });
+
+  it("keeps matching deep overlapping routes without blowing up", () => {
+    const router = new RouteNode({ ignoreDuplicateSlashes: true, ignoreTrailingSlash: true });
+    // Every level has a static and a param branch; only the last level has a
+    // route, so a failing lookup must backtrack through all combinations.
+    const depth = 12;
+    for (let mask = 0; mask < 2 ** depth; mask += 97) {
+      const segments = Array.from({ length: depth }, (_, i) => ((mask >> i) & 1 ? `:p${i}` : "s"));
+      router.register(`/${segments.join("/")}/end`, HTTP_METHODS.GET, [() => {}]);
+    }
+
+    const started = performance.now();
+    const miss = router.match(`/${Array(depth).fill("s").join("/")}/nope`, HTTP_METHODS.GET);
+    expect(miss).toBeNull();
+    expect(performance.now() - started).toBeLessThan(100);
+  });
+});
+
+describe("Matching – Unicode and encoded paths", () => {
+  const router = new RouteNode({ ignoreDuplicateSlashes: true, ignoreTrailingSlash: true });
+  router.register("/café", HTTP_METHODS.GET, [() => {}], { path: "/café" });
+  router.register("/caf%C3%A9-encoded", HTTP_METHODS.GET, [() => {}], { path: "/caf%C3%A9-encoded" });
+  router.register("/p/:name", HTTP_METHODS.GET, [() => {}], { path: "/p/:name" });
+
+  it("matches routes against the raw (encoded) request path, like Express", () => {
+    expect(router.match("/café", HTTP_METHODS.GET)?.route.path).toBe("/café");
+    expect(router.match("/caf%C3%A9-encoded", HTTP_METHODS.GET)?.route.path).toBe("/caf%C3%A9-encoded");
+  });
+
+  it.each([
+    ["/p/%E6%97%A5%E6%9C%AC", "日本"],
+    ["/p/caf%C3%A9", "café"],
+    ["/p/a%2Fb", "a/b"],
+    ["/p/%F0%9F%98%80", "😀"],
+    ["/p/e%CC%81", "e\u0301"],
+  ])("decodes %s to %j without normalizing Unicode", (path, value) => {
+    expect(router.match(path, HTTP_METHODS.GET)?.params).toEqual({ name: value });
+  });
+
+  it("does not let an encoded slash create a new segment", () => {
+    expect(router.match("/p/a%2Fb", HTTP_METHODS.GET)?.route.path).toBe("/p/:name");
+    expect(router.match("/p/a/b", HTTP_METHODS.GET)).toBeNull();
+  });
 });

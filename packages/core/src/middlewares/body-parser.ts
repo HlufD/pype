@@ -48,10 +48,14 @@ const UNITS: Record<string, number> = {
 /**
  * Converts a size limit like `"100kb"` to bytes.
  *
- * @throws When the string isn't a number with an optional b/kb/mb/gb unit.
+ * @throws When the string isn't a number with an optional b/kb/mb/gb unit,
+ * or the number is `NaN` (it would disable the limit). Same as `body-parser`.
  */
 function parseBytes(limit: number | string): number {
-  if (typeof limit === "number") return limit;
+  if (typeof limit === "number") {
+    if (Number.isNaN(limit)) throw new TypeError(`Invalid body size limit: ${limit}`);
+    return limit;
+  }
 
   const match = /^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb)?$/i.exec(limit.trim());
   if (!match) throw new TypeError(`Invalid body size limit: ${limit}`);

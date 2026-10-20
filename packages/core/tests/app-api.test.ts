@@ -361,6 +361,13 @@ describe("body parsers", () => {
     expect(reply.status).toBe(413);
   });
 
+  it("throws when created with a NaN limit, which would disable it, like body-parser", () => {
+    for (const parser of [json, urlencoded, text, raw]) {
+      expect(() => parser({ limit: NaN })).toThrow(TypeError);
+      expect(() => parser({ limit: Infinity })).not.toThrow();
+    }
+  });
+
   it("rejects compressed bodies", async () => {
     expect((await post("/json", "{}", { "Content-Encoding": "gzip" })).status).toBe(415);
   });

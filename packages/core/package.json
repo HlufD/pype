@@ -51,6 +51,7 @@
     "test:fuzz": "FUZZ_RUNS=20000 vitest run tests/fuzz.test.ts tests/trie.test.ts tests/differential.test.ts --testTimeout=900000",
     "bench": "tsc && node .build/bench/http.bench.js",
     "bench:router": "tsc && node .build/bench/router.bench.js",
+    "bench:etag": "tsc && node .build/bench/etag.bench.js",
     "prepublishOnly": "npm run typecheck && npm run test:coverage && npm run build"
   },
   "devDependencies": {

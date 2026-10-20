@@ -6,11 +6,14 @@
  *   and its dependencies. Express 5 (path-to-regexp v8) needs named
  *   wildcards, so `/*` becomes `/*splat`.
  *
- * SIGINT exits cleanly so `--cpu-prof` can write its profile.
+ * SIGINT exits cleanly so `--cpu-prof` can write its profile. Over the IPC
+ * channel, a `"memory"` message is answered with the process's memory use and
+ * the number of garbage collections so far.
  *
  * @packageDocumentation
  */
 import { createServer } from "http";
+import { PerformanceObserver } from "perf_hooks";
 import { Pype } from "../src/core/server";
 import { routes } from "./routes";
 
@@ -39,5 +42,15 @@ if (framework === "node") {
   for (const [method, path] of routes) app[method](path, handler);
   app.listen(port, () => console.log("ready"));
 }
+
+/** Garbage collections since start. */
+let collections = 0;
+new PerformanceObserver((list) => (collections += list.getEntries().length)).observe({ entryTypes: ["gc"] });
+
+process.on("message", (message) => {
+  if (message !== "memory") return;
+  const { rss, heapUsed } = process.memoryUsage();
+  process.send?.({ rss, heapUsed, collections });
+});
 
 process.on("SIGINT", () => process.exit(0));

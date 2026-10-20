@@ -57,9 +57,11 @@ src/
     router.ts               PypeRouter: registration stack, flattening to layers
     request.ts              Request: extends http.IncomingMessage
     response.ts             Response: extends http.ServerResponse
+    view.ts                 View: finds and renders templates for res.render()
   utils/
     Trie-Route.ts           RouteNode: the radix tree that matches paths
     helpers.ts              negotiation, cookies, ranges, ETags, freshness, query parsing
+    qs.ts                   port of the qs parser, for extended forms and queries
     trust-proxy.ts          "trust proxy" setting and X-Forwarded-For handling
   middlewares/
     body-parser.ts          json(), urlencoded(), text(), raw()
@@ -162,12 +164,17 @@ of a request. It:
 
 1. Calls `router.compile()`, which walks the stack recursively and produces a
    **flat array of layers in registration order**. Mount paths are joined
-   (`/admin` + `/stats` becomes `/admin/stats`), and each layer records the
-   chain of routers it came from.
-2. Builds a fresh `RouteNode` (radix tree) and registers every route layer's
-   full path in it.
+   (`/admin` + `/stats` becomes `/admin/stats`), each layer records the chain
+   of routers it came from, and an `end` marker follows each mounted router's
+   layers.
+2. Builds a fresh `RouteNode` (radix tree) and registers every string route
+   layer's full path in it. RegExp routes stay out of the tree.
 3. Builds `routeLayers`, a map from the tree's entry to the route layers it
    stands for (see [why](#one-tree-entry-many-route-layers)).
+4. Builds `fixedLayers`: the layers the tree can't rule out, that is
+   middleware, RegExp routes and router ends. A request walks these merged
+   with the route layers the tree matched (`dispatchOrder()`), so the cost
+   doesn't grow with the number of routes.
 
 ```mermaid
 flowchart LR
@@ -245,15 +252,20 @@ Runs first for every request:
 
 #### The pipeline loop: `handle()` and `next()`
 
-`handle()` keeps an `index` into the layer array and defines `next(err?)`.
-Each call to `next` advances `index` to the next layer that applies and runs
-it:
+`handle()` builds the request's layer order (`dispatchOrder()`), keeps an
+`index` into it and defines `next(err?)`. Each call to `next` advances
+`index` to the next layer that applies and runs it:
 
 | Layer kind | Runs when |
 | ---------- | --------- |
-| Middleware, 3 parameters | No error is pending and `req.path` is under the layer's mount path |
+| Middleware, 3 parameters | No error is pending and `req.path` is under the layer's mount path (and matches its RegExp, at the start and up to a `/`) |
 | Middleware, 4 parameters (error middleware) | An error is pending and the path matches |
-| Route | The layer is one of the layers matched by the tree |
+| Route | No error is pending, and the tree matched the layer, or its RegExp matches the path below its router (HEAD falling back to GET) |
+| Router end | An `OPTIONS` request: see below |
+
+Layers of one array path share a `group`; once one of them ran, the others
+are skipped, so the route or middleware runs once like a single Express
+layer.
 
 Signals passed to `next`:
 
@@ -265,10 +277,14 @@ Signals passed to `next`:
 - `next("router")`: the loop skips every following layer that belongs to the
   innermost router of the layer that called it.
 
-When no layer is left, an `OPTIONS` request without an error gets the
-automatic `Allow` response of `allowedMethods()`: the methods of every route
-layer matching the path that doesn't handle `OPTIONS` itself, like Express.
-Otherwise `finalHandler()` responds.
+Automatic `OPTIONS` follows Express's router: for an `OPTIONS` request, a
+route layer whose path matches but which doesn't handle `OPTIONS` is not run;
+its methods are added to its router's `Allow` set instead. When a router is
+done, at its `end` marker, after `next("router")`, or for the app at the end
+of the loop, it answers with its set if it isn't empty. So a mounted router
+answers before middleware registered after it.
+
+When no layer is left, `finalHandler()` responds.
 
 #### `callMiddleware()` and `runRoute()`
 
@@ -277,11 +293,16 @@ mounted on `/admin`, `mount()` strips `/admin` from `req.url` and `req.path`
 and appends it to `req.baseUrl`. The original values are restored when the
 middleware calls `next()`.
 
+Middleware gets `req.params` from its RegExp mount path, or `{}`.
+
 `runRoute()` additionally:
 
 - sets `req.params` and `req.route`;
-- runs the route's own handlers in order with its own inner `next`;
-- while an error is pending, only runs four-parameter handlers.
+- runs the `param()` callbacks of the route's router for its parameters
+  (`processParams()`, Express's algorithm: once per request and value per
+  router, errors and `next("route")` handled like Express);
+- runs the route's own handlers in order with its own inner `next`; a
+  four-parameter handler only gets errors raised inside the route.
 
 #### `invoke()`: catching errors
 
@@ -338,15 +359,24 @@ type StackEntry =
 `compile(basePath, routers)` produces the layers:
 
 ```ts
-interface MiddlewareLayer { kind: "middleware"; path; handle; routers }
+interface MiddlewareLayer { kind: "middleware"; path; pattern?; handle; routers; group? }
 interface RouteLayer {
   kind: "route";
-  fullPath;   // used for matching, e.g. "/admin/stats"
-  routePath;  // as written, e.g. "/stats", exposed as req.route.path
+  fullPath;   // used for matching, e.g. "/admin/stats"; the router's mount for a RegExp
+  routePath;  // as written, e.g. "/stats", a RegExp or an array, exposed as req.route.path
+  pattern?;   // a RegExp path
   baseUrl;    // mount path, e.g. "/admin", exposed as req.baseUrl
-  methods; handlers; routers;
+  keys;       // param names, for param() callbacks
+  methods; handlers; routers; group?;
 }
+interface RouterEndLayer { kind: "end"; router; routers }
 ```
+
+Paths can be strings, RegExps or arrays. Each element of an array becomes its
+own layer and they share a `group`. A router mounted on several paths is
+compiled once per path, and copy `i` of each layer shares a group. Mounting a
+router on a RegExp throws, since its layers' paths must be known when the
+tree is built. `param()` stores callbacks in `params` by name.
 
 `routers` is the chain of routers a layer came from, outermost first. It is
 what lets `next("router")` know which layers to skip.
@@ -688,7 +718,9 @@ which is faster and gives TypeScript real classes.
 ### No runtime dependencies
 
 Every helper Express takes from npm (`body-parser`, `qs`, `send`, `cookie`,
-`proxy-addr`, `fresh`, `range-parser`, ...) is implemented here. This keeps
+`proxy-addr`, `fresh`, `range-parser`, `negotiator`, `type-is`, ...) is
+implemented here. The `qs` parser is a port (`utils/qs.ts`, with its BSD
+licence notice), fuzzed against the real package. This keeps
 installs small (one package, about 0.5 MB) and the supply-chain surface to
 this repository. Behaviour is checked against the original packages in the
 tests where it matters, for example cookie signatures against
@@ -788,10 +820,7 @@ before and after.
   `{/:id}` and `/*splat`.
 - Routing is always case-sensitive; there is no `"case sensitive routing"` or
   `"strict routing"` setting.
-- No `app.param()`, regex routes, several params in one segment, params in
-  `use()` mount paths, or mounting another app with `app.use(otherApp)`.
-- No view rendering (`app.engine`, `res.render`) or `res.jsonp`.
-- Body parsers don't decompress bodies, and `urlencoded()` doesn't parse
-  nested keys.
-- Automatic `OPTIONS` responses come from the app after all middleware, not
-  from inside the router whose routes matched as in Express.
+- No several params in one segment, params in `use()` string mount paths,
+  routers mounted on a RegExp, or mounting another app with
+  `app.use(otherApp)`.
+- No `res.jsonp` or `req.param()`.

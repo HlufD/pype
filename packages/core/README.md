@@ -140,6 +140,9 @@ call is ignored.
 | `/users/:id?`       | `/users` and `/users/42`                 | `{}` or `{ id: "42" }`          |
 | `/files/*`          | `/files/a/b.txt`                         | `{ "*": "a/b.txt" }`            |
 | `/`                 | `/`                                      | `{}`                            |
+| `/^\/re\/(\d+)$/`    | `/re/42`                                 | `{ 0: "42" }`                   |
+| `/(?<name>\w+)-(\d+)/` | `/x/abc-12`                            | `{ name: "abc", 0: "12" }`      |
+| `["/a", "/b/:id"]`  | `/a` and `/b/7`                          | `{}` or `{ id: "7" }`           |
 
 Rules:
 
@@ -166,6 +169,15 @@ Rules:
 - Two routes may not use different parameter names at the same position,
   such as `/a/:id` and `/a/:userId/x`. This is reported by `listen()`, or by
   the first request when you use `app.handler`.
+- A regular expression path is matched like in Express: against the path as
+  it is (no slash normalization), in registration order with the other
+  layers. Named groups become params with their name, other groups are
+  numbered from `0`, and values are URL-decoded. `req.route.path` is the
+  RegExp.
+- An array of paths is one route (or middleware) that matches any of them and
+  runs at most once per request; `req.route.path` is the array.
+- Route patterns are Express 4 style (`:id?`, `*`), not Express 5's `{/:id}`
+  and `/*splat`.
 
 ### Mounting and relative paths
 
@@ -207,6 +219,10 @@ app.get("/explicit", (req, res, next) => {
   next(new Error("boom"));                 // passed to next()
 });
 ```
+
+A four-parameter handler inside a route only gets errors raised in that
+route; an error that is already pending skips routes entirely, like in
+Express.
 
 Error middleware has exactly four parameters and is usually registered last:
 
@@ -295,8 +311,16 @@ app.use(cors(), helmet());              // several at once
 app.use([auth, audit]);                 // arrays are flattened
 app.use("/api", apiRouter);             // mount a router
 app.use("/static", serveStatic("public"));
+app.use(["/a", "/b"], audit);           // several mount paths, runs once
+app.use(/^\/v(\d+)/, version);          // RegExp mount path, req.params[0] is the version
 app.use(onError);                       // four parameters: error middleware
 ```
+
+A RegExp mount path must match at the start of the path and end at a `/` or
+the end of it, like in Express; the matched part becomes `req.baseUrl` and its
+groups `req.params` (and run `param()` callbacks). Mounting a router on a
+RegExp throws a `TypeError`: Pype resolves mount paths when routes are
+compiled.
 
 Throws a `TypeError` if a handler isn't a function or a `PypeRouter`.
 
@@ -317,9 +341,12 @@ With a single argument, `app.get(name)` reads a setting instead:
 
 An `OPTIONS` request that no handler answers gets an automatic response, like
 in Express: 200 with an `Allow` header (and body) listing the methods of the
-routes for that path, `HEAD` included when there is a `GET` route. Routes
-that handle `OPTIONS` themselves, including `all()` routes, aren't listed;
-without any other route the request gets the usual 404.
+routes for that path, `HEAD` included when there is a `GET` route. Each
+router answers for its own routes when it is done with the request, so a
+mounted router answers before middleware registered after it, such as a
+catch-all 404. Routes that handle `OPTIONS` themselves, including `all()`
+routes, aren't listed; without any other route the request gets the usual
+404.
 
 #### `app.route(path)`
 
@@ -332,7 +359,58 @@ app.route("/books")
 ```
 
 The builder has `get`, `post`, `put`, `patch`, `delete`, `head`, `options` and
-`all`.
+`all`. The path can also be a RegExp or an array.
+
+#### `app.param(name, callback)`, `router.param(name, callback)`
+
+Runs `callback(req, res, next, value, name)` before the handlers of routes
+that have the parameter, like Express. `name` can be an array.
+
+```ts
+app.param("id", async (req, res, next, id) => {
+  req.user = await users.find(id);
+  if (!req.user) return next(Object.assign(new Error("No such user"), { status: 404 }));
+  next();
+});
+
+app.get("/users/:id", (req, res) => res.json(req.user));
+app.get("/users/:id/posts", (req, res) => res.json(req.user.posts));
+```
+
+- Callbacks run once per request and value: a second route with the same `id`
+  reuses the result (and the error, unless it was `next("route")`).
+- `next(err)`, a thrown error or a rejected promise go to error middleware;
+  `next("route")` skips the route.
+- Each router has its own callbacks: `app.param()` applies to the app's own
+  routes, `router.param()` to the router's.
+- Changes to `req.params[name]` in a callback are kept for the route.
+
+#### `app.engine(ext, callback)`, `app.render(view, [locals], callback)`
+
+Template rendering works like in Express, with the same engine interface:
+`callback(path, options, done)`. Engines made for Express (`ejs`, `pug`,
+`handlebars` adapters, ...) work as they are.
+
+```ts
+app.engine("html", require("ejs").renderFile);
+app.set("views", "./templates");        // a directory, or a list searched in order
+app.set("view engine", "html");          // extension for names without one
+
+app.get("/", (req, res) => res.render("home", { title: "Hi" }));
+```
+
+- A view is looked up in each `"views"` directory as `<name>.<ext>`, then
+  `<name>/index.<ext>`. Without a registered engine the npm module named
+  after the extension is loaded (`require("pug").__express`).
+- The template gets `app.locals` (including `settings`), then `res.locals`,
+  then the options passed to `render()`.
+- With `"view cache"` (on when `env` is `"production"`), or `cache: true` in
+  the options, found views are remembered by name.
+- `app.render()` calls back with `(err, html)`, always asynchronously. A view
+  that can't be found is an error like `Failed to lookup view "home" in views
+  directory "/app/views"`.
+- `app.set("view", MyView)` replaces the view class, with Express's `View`
+  interface.
 
 #### `app.set(name, value)`, `app.get(name)`
 
@@ -388,7 +466,7 @@ automatically.
 | Property        | Type                                  | Description |
 | --------------- | ------------------------------------- | ----------- |
 | `params`        | `Record<string, string>`              | Route parameters, URL-decoded. `"*"` holds the wildcard match. |
-| `query`         | `Record<string, string \| string[]>`  | Parsed with Node's `querystring.parse`, Express 5's default: repeated keys become arrays, at most 1000 keys are read and `a[b]=c` stays a literal key. The object has no prototype, so use `Object.hasOwn(req.query, key)` rather than `req.query.hasOwnProperty(key)`. |
+| `query`         | `Record<string, any>`                 | Parsed with the [`"query parser"` setting](#settings). By default Node's `querystring.parse`, like Express 5: repeated keys become arrays, at most 1000 keys are read and `a[b]=c` stays a literal key; with `"extended"`, nested objects and arrays. The object has no prototype, so use `Object.hasOwn(req.query, key)` rather than `req.query.hasOwnProperty(key)`. |
 | `body`          | `any`                                 | Parsed body, set by a [body parser](#body-parsers). `undefined` otherwise. |
 | `path`          | `string`                              | Path without the query string, relative to the current mount path. |
 | `originalUrl`   | `string`                              | The full original URL, including the query string. |
@@ -707,6 +785,17 @@ characters get an ASCII fallback plus an RFC 5987 `filename*`.
 res.attachment("report.pdf").send(pdfBuffer);
 ```
 
+#### `res.render(view, [locals], [callback])`
+
+Renders a view (see [`app.engine()`](#appengineext-callback-apprenderview-locals-callback))
+with `res.locals` and `locals`, and sends the HTML. Errors go to
+`next(err)`. With a callback, it gets `(err, html)` and nothing is sent.
+
+```ts
+res.render("users/show", { user });
+res.render("email", { user }, (err, html) => sendMail(html));
+```
+
 #### `res.sendFile(path, [options], [callback])`
 
 Streams a file.
@@ -797,9 +886,17 @@ Options:
 
 | Option   | Default   | Description |
 | -------- | --------- | ----------- |
-| `limit`  | `"100kb"` | Maximum body size, as bytes or a string with `b`, `kb`, `mb` or `gb`. An invalid string or `NaN` throws a `TypeError` when the parser is created. |
+| `limit`  | `"100kb"` | Maximum body size after decompression, as bytes or a string with `b`, `kb`, `mb` or `gb`. An invalid string or `NaN` throws a `TypeError` when the parser is created. |
 | `type`   | see above | Content types to parse: a type, a list of types (same patterns as `req.is()`), or a function `(req) => boolean`. |
+| `inflate` | `true`   | Decompress `gzip`, `deflate` and `br` bodies. With `false` they are a 415. |
+| `defaultCharset` | `"utf-8"` | Charset when `Content-Type` has none. `urlencoded()`: `"utf-8"` or `"iso-8859-1"`. |
+| `verify` |           | `verify(req, res, body, charset)` gets the raw body before parsing; throw to reject with a 403 (`type` defaults to `entity.verify.failed`). |
 | `strict` | `true`    | `json()` only: accept only objects and arrays. |
+| `reviver` |          | `json()` only: passed to `JSON.parse`. |
+| `extended` | `false` | `urlencoded()` only: parse nested keys (`a[b]=c`) and arrays (`a[]=1`) with the rules of `qs`, like `body-parser`. |
+| `parameterLimit` | `1000` | `urlencoded()` only: more parameters is a 413. |
+| `depth`  | `32`      | `urlencoded()` with `extended` only: deeper keys are a 400. |
+| `charsetSentinel`, `interpretNumericEntities` | `false` | `urlencoded()` only, as in `body-parser`: take the charset from a `utf8=` parameter, decode `&#nnn;` in ISO-8859-1 bodies. |
 
 Behaviour:
 
@@ -813,10 +910,15 @@ Behaviour:
   `json()` accepts UTF-8, UTF-16 and UTF-32; `urlencoded()` accepts UTF-8 and
   ISO-8859-1; `text()` accepts any charset Node can decode. Others are a 415.
   A byte order mark is dropped.
-- `urlencoded()` follows `body-parser` with `extended: false`: `+` is a space,
-  repeated keys become arrays, a key wrapped in brackets loses them (`[a]` is
-  `a`), `[]` keys become `0`, `1`, ..., empty and `__proto__` keys are
-  dropped, and more than 1000 parameters is a 413.
+- Compressed bodies (`gzip`, `deflate`, `br`) are decompressed, and `limit`
+  counts the decompressed bytes, so a small compressed body can't expand past
+  it. Other encodings are a 415.
+- `urlencoded()` follows `body-parser` and parses with a port of `qs`, so
+  results are the same as in Express. Without `extended`, keys are flat: `+`
+  is a space, repeated keys become arrays, a key wrapped in brackets loses
+  them (`[a]` is `a`) and `[]` keys become `0`, `1`, .... With `extended`,
+  `a[b][c]=1` and `a[]=1` build nested objects and arrays. Empty and
+  `__proto__` keys are dropped and objects have no prototype.
 - Errors are passed to `next(err)` with `status`, `statusCode`, `expose: true`
   and `type`, like the `body-parser` package:
 
@@ -824,13 +926,13 @@ Behaviour:
 | ------ | ---------------------- | ---- |
 | 400    | `entity.parse.failed`  | Invalid JSON (including a whitespace-only body), or a primitive in strict mode |
 | 400    | `request.aborted`      | The client disconnected before sending the whole body |
-| 413    | `entity.too.large`     | The body is larger than `limit` |
-| 413    | `parameters.too.many`  | A form has more than 1000 parameters |
+| 400    | `querystring.parse.rangeError` | An `extended` form key is deeper than `depth` |
+| 400    | (none)                 | The compressed data is invalid |
+| 403    | `entity.verify.failed` | `verify` threw (or the `type` of its error) |
+| 413    | `entity.too.large`     | The body, decompressed, is larger than `limit` |
+| 413    | `parameters.too.many`  | A form has more than `parameterLimit` parameters |
 | 415    | `charset.unsupported`  | The charset isn't accepted by the parser (see above) |
-| 415    | `encoding.unsupported` | The body is compressed (`Content-Encoding` isn't `identity`) |
-
-Not supported: compressed bodies, and nested keys like `a[b]=c` in
-`urlencoded()` (the `extended` option is ignored; such keys stay literal).
+| 415    | `encoding.unsupported` | An unknown `Content-Encoding`, or any with `inflate: false` |
 
 ### Settings
 
@@ -845,6 +947,11 @@ Set with `app.set(name, value)`, `new Pype({ name: value })`, `app.enable` or
 | `"json spaces"`      | `undefined`                              | Indentation for `res.json()`. |
 | `"json replacer"`    | `undefined`                              | `JSON.stringify` replacer for `res.json()`. |
 | `"subdomain offset"` | `2`                                      | Number of dot-separated parts removed from the end of the host name for `req.subdomains`. |
+| `"query parser"`     | `"simple"`                               | How `req.query` is parsed: `"simple"` (Node's `querystring`), `"extended"` (`qs` rules: nested objects and arrays), `false` (no parsing) or a function `(query) => object`, which gets `null` without a `?`. |
+| `"views"`            | `"<cwd>/views"`                          | Directory, or list of directories, with the views. |
+| `"view engine"`      | `undefined`                              | Extension for view names without one. |
+| `"view cache"`       | `true` when `env` is `"production"`      | Remember found views. |
+| `"view"`             | Pype's `View`                            | Class that finds and renders views. |
 
 `"trust proxy"` takes the same values as in Express:
 
@@ -879,8 +986,10 @@ Exported from `pyper-web`:
 | `RouteInfo`           | The type of `req.route`. |
 | `CookieOptions`       | Options of `res.cookie()`. |
 | `SendFileOptions`     | Options of `res.sendFile()` and `res.download()`. |
-| `BodyParserOptions`, `JsonOptions` | Options of the body parsers. |
-| `UseHandler`, `HandlerParam` | What `use()` and route methods accept. |
+| `BodyParserOptions`, `JsonOptions`, `UrlencodedOptions` | Options of the body parsers. |
+| `UseHandler`, `HandlerParam`, `PathParam` | What `use()` and route methods accept; `PathParam` is a string, RegExp or array. |
+| `ParamHandler`        | A `param()` callback. |
+| `View`, `Engine`, `ViewOptions` | The view class (to extend for `app.set("view", ...)`), and the template engine signature. |
 
 Handlers passed inline get their parameter types inferred:
 
@@ -1059,13 +1168,17 @@ Compatibility at a glance:
 | Routers, mount paths, `req.baseUrl` / `path` / `originalUrl` | Same |
 | Request API (`accepts*`, `is`, `range`, `fresh`, `ip`, `ips`, `protocol`, `hostname`, `subdomains`, ...) | Same, checked by the differential tests |
 | Response API (`send`, `json`, `status`, `set`, `type`, `vary`, `format`, `redirect`, `cookie`, `attachment`, `sendFile`, `download`, ...) | Same, checked by the differential tests |
-| Automatic `OPTIONS` and `HEAD` | Same, see below for `OPTIONS` in routers |
-| `"trust proxy"` | Same values and results |
-| Body parsers | Same results, except compressed bodies and `extended: true` |
+| Automatic `OPTIONS` and `HEAD` | Same, also from mounted routers |
+| `app.param()`, `router.param()` | Same |
+| RegExp and array paths | Same, except mounting a router on a RegExp |
+| `app.engine()`, `app.render()`, `res.render()`, view settings | Same, Express engines work |
+| `"trust proxy"`, `"query parser"` | Same values and results |
+| Body parsers, including compressed bodies and `extended: true` | Same results and errors |
 | Route matching | Most specific route wins, not the first registered |
+| Route syntax | Express 4 style `:id?` and `*`, not Express 5's `{/:id}` and `*name` |
 | Duplicate and trailing slashes | Always ignored |
 | Default 404 and error responses | JSON instead of HTML |
-| `app.param()`, regex routes, `res.render()`, `res.jsonp()`, `req.param()`, `app.use(otherApp)` | Not implemented |
+| `res.jsonp()`, `req.param()`, `app.use(otherApp)`, params in `use()` strings | Not implemented |
 
 Differences:
 
@@ -1076,19 +1189,18 @@ Differences:
 - The default 404 and error responses are JSON.
 - A second `next()` call from the same handler is ignored with a warning;
   Express continues with the following layer.
-- Automatic `OPTIONS` responses are sent once, after all middleware, and list
-  every method registered for the path. Express answers from inside the
-  innermost router whose routes matched, listing only that router's methods.
 - `res.sendFile()` errors have the standard status text as message; Express
   passes the file system error, whose message includes the file path.
-- Not implemented: `app.param()`, regular expression routes, several
-  parameters in one segment (`/:from-:to`, which throws), parameters in `use()` mount
-  paths, mounting another app with `app.use(otherApp)`, `app.engine()` and
-  `res.render()`, `res.jsonp()`, `req.param()`, and the
-  `"case sensitive routing"`, `"strict routing"`, `"query parser"`,
-  `"x-powered-by"` and `"views"` settings.
-- The body parsers don't decompress bodies (415 instead) and `urlencoded()`
-  doesn't parse nested keys.
+- A router can't be mounted on a regular expression (it throws); RegExp
+  routes and middleware work.
+- Optional parameters and wildcards use the Express 4 syntax: `/:id?` and
+  `/files/*` (`req.params["*"]`), where Express 5 uses `{/:id}` and
+  `/*name`.
+- Not implemented: several parameters in one segment (`/:from-:to`, which
+  throws), parameters in `use()` string mount paths (use a RegExp), mounting
+  another app with `app.use(otherApp)`, `res.jsonp()`, `req.param()`, and the
+  `"case sensitive routing"`, `"strict routing"` and `"x-powered-by"`
+  settings.
 
 ## Production notes
 
@@ -1107,6 +1219,8 @@ Differences:
   Register your own error middleware to log elsewhere.
 - **Security headers**: use `helmet`. Pype doesn't add an `X-Powered-By`
   header.
+- **Views**: `"view cache"` is on when `env` is `"production"`; set
+  `NODE_ENV=production` so templates aren't looked up on every request.
 - **Shutdown**: `listen()` returns the `http.Server`, so you can stop it
   cleanly on `SIGTERM`.
 

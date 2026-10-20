@@ -48,7 +48,7 @@
     "test": "vitest run",
     "test:watch": "vitest watch",
     "test:coverage": "vitest run --coverage",
-    "test:fuzz": "FUZZ_RUNS=20000 vitest run tests/fuzz.test.ts tests/trie.test.ts tests/differential.test.ts --testTimeout=900000",
+    "test:fuzz": "vitest run --config vitest.fuzz.config.ts",
     "bench": "tsc && node .build/bench/http.bench.js",
     "bench:router": "tsc && node .build/bench/router.bench.js",
     "bench:etag": "tsc && node .build/bench/etag.bench.js",

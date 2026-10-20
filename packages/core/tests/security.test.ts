@@ -185,9 +185,10 @@ describe("res.sendFile() and symlinks", () => {
     mkdirSync(join(dir, "secret"));
     writeFileSync(join(publicDir, "docs", "readme.txt"), "readme");
     writeFileSync(join(dir, "secret", "key.txt"), "TOP-SECRET");
-    symlinkSync(join(dir, "secret"), join(publicDir, "escape"));
-    symlinkSync(join(publicDir, "docs"), join(publicDir, "inner"));
-    symlinkSync(publicDir, join(dir, "link-root"));
+    // Junctions on Windows, where directory symlinks need admin rights; the type is ignored elsewhere.
+    symlinkSync(join(dir, "secret"), join(publicDir, "escape"), "junction");
+    symlinkSync(join(publicDir, "docs"), join(publicDir, "inner"), "junction");
+    symlinkSync(publicDir, join(dir, "link-root"), "junction");
 
     const app = new Pype();
     app.get("/follow/*", (req: Request, res: Response) => res.sendFile(req.params["*"], { root: publicDir }));

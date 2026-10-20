@@ -39,7 +39,10 @@ export interface TestServer {
  * await api.close();
  */
 export async function start(app: Pype): Promise<TestServer> {
-  const server = app.listen(0);
+  // Bound to the address the client uses: on all interfaces, the OS can give
+  // out a port another program holds on 127.0.0.1 (VS Code does), and the
+  // requests would reach that program instead.
+  const server = app.listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
   const port = (server.address() as AddressInfo).port;
 

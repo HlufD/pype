@@ -44,7 +44,7 @@ const staticRoot = mkdtempSync(join(tmpdir(), "pype-static-"));
  * @returns The port.
  */
 function listen(app: Pype): Promise<number> {
-  const server = app.listen(0);
+  const server = app.listen(0, "127.0.0.1");
   servers.push(server);
   return new Promise((resolve) =>
     server.once("listening", () =>
@@ -363,7 +363,7 @@ describe("Express pipeline semantics", () => {
       res.json({ path: req.path, accepts: req.accepts("json") });
     });
 
-    const server = createServer(app.handler).listen(0);
+    const server = createServer(app.handler).listen(0, "127.0.0.1");
     servers.push(server);
     await new Promise((resolve) => server.once("listening", resolve));
 

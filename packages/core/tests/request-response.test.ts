@@ -67,7 +67,7 @@ const reflect = (pick: (req: Request) => unknown) => (req: Request, res: Respons
  * @returns The server and its port.
  */
 function start(app: Pype): Promise<[Server, number]> {
-  const s = app.listen(0);
+  const s = app.listen(0, "127.0.0.1");
   return new Promise((resolve) =>
     s.once("listening", () => resolve([s, (s.address() as AddressInfo).port])),
   );

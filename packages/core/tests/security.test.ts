@@ -62,7 +62,7 @@ beforeAll(async () => {
     res.json({ body: req.body, prototype: Object.getPrototypeOf(req.body) === null ? "null" : "object" });
   });
 
-  server = app.listen(0);
+  server = app.listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
   port = (server.address() as AddressInfo).port;
 });
@@ -144,7 +144,7 @@ describe("malformed param escapes", () => {
       res.status(err.status).json({ caught: err.message });
     });
 
-    api = app.listen(0);
+    api = app.listen(0, "127.0.0.1");
     await new Promise((resolve) => api.once("listening", resolve));
     base = `http://127.0.0.1:${(api.address() as AddressInfo).port}`;
   });
@@ -202,7 +202,7 @@ describe("res.sendFile() and symlinks", () => {
       res.download(req.params["*"], { root: publicDir, followSymlinks: false }),
     );
 
-    api = app.listen(0);
+    api = app.listen(0, "127.0.0.1");
     await new Promise((resolve) => api.once("listening", resolve));
     base = `http://127.0.0.1:${(api.address() as AddressInfo).port}`;
   });

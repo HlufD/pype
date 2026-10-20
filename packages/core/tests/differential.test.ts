@@ -281,7 +281,16 @@ function define(app: any, kind: Kind) {
 
 /** Sends `options` to both servers. */
 async function both(path: string, options: SendOptions = {}, pair: Pair = servers): Promise<[Reply, Reply]> {
-  return Promise.all([pair.express.send(path, options), pair.pype.send(path, options)]);
+  // A request that fails outright says which server, port and path, so a
+  // rare failure can be diagnosed from the CI log alone.
+  const send = (kind: Kind) =>
+    pair[kind].send(path, options).catch((error: NodeJS.ErrnoException) => {
+      throw Object.assign(
+        new Error(`${kind} on port ${pair[kind].port}: ${options.method ?? "GET"} ${path} failed with ${error.code ?? error.message}`),
+        { cause: error },
+      );
+    });
+  return Promise.all([send("express"), send("pype")]);
 }
 
 /** The part of a reply that must match. */

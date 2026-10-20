@@ -209,7 +209,7 @@ describe("error handling", () => {
     app.get("/a/:other/x", (_req: Request, res: Response) => res.send("b"));
 
     const handler = app.handler;
-    const server = createServer(handler).listen(0);
+    const server = createServer(handler).listen(0, "127.0.0.1");
     await new Promise((resolve) => server.once("listening", resolve));
     const port = (server.address() as AddressInfo).port;
     const reply = await fetch(`http://127.0.0.1:${port}/a/1`);
@@ -294,7 +294,7 @@ describe("error handling", () => {
     const app = new Pype();
     app.get("/", (req: Request, res: Response) => res.json({ isPype: req instanceof Request && res instanceof Response }));
 
-    const server = createServer((req: IncomingMessage, res: ServerResponse) => app.handler(req, res)).listen(0);
+    const server = createServer((req: IncomingMessage, res: ServerResponse) => app.handler(req, res)).listen(0, "127.0.0.1");
     await new Promise((resolve) => server.once("listening", resolve));
     const reply = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/`);
     server.close();

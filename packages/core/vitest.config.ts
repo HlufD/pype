@@ -7,6 +7,8 @@ export default defineConfig({
         globals: true,
         environment: 'node',
         include: ['tests/**/*.test.ts'],
+        // Setup hooks start real servers; leave room for a busy CI machine.
+        hookTimeout: 30_000,
         coverage: {
             reporter: ['text', 'json', 'html'],
             include: ['src/**/*.ts'],

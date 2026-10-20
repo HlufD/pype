@@ -1,0 +1,22 @@
+name: Fuzz
+
+# Long fuzzing runs: the property tests and the differential tests against
+# Express, at 20,000 runs per property. CI runs the same properties with
+# fewer runs on every push.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+      - run: npm ci
+      - run: npm run test:fuzz -w packages/core

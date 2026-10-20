@@ -445,8 +445,10 @@ rules.
 Every match then creates an object of the same shape, which V8 optimizes far
 better than adding keys one by one. Names come from route definitions and are
 JSON-escaped, so request data never reaches generated code. `decode()` only
-calls `decodeURIComponent` when the value contains `%`, and returns malformed
-escapes unchanged.
+calls `decodeURIComponent` when the value contains `%`. A malformed escape
+throws a 400 `URIError`; `match()` catches it and returns it as
+`MatchResult.error` with empty params, and `Pype.handle()` then skips the
+route layers and passes the error on, like Express.
 
 ### Request
 
@@ -672,6 +674,7 @@ tests where it matters, for example cookie signatures against
 | Header injection through cookies | Names, values, domain and path are validated | `serializeCookie()` |
 | Path traversal in `sendFile` | `..` segments and paths outside `root` give 403, null bytes 400 | `resolveFilePath()` |
 | Hidden files leaking | Dotfiles ignored (404) by default | `resolveFilePath()` |
+| Symlinks leading out of `root` | Opt-in with `followSymlinks: false`: the real path must stay inside the real root, 403 otherwise. Followed by default, like Express | `checkRealPath()` |
 | Large or slow bodies | Size limit checked on `Content-Length` and while reading | `readBody()` |
 | File descriptor exhaustion | Files closed when clients disconnect | `sendFile()` with `stream.pipeline` |
 | Spoofed client IPs | `X-Forwarded-*` only read from trusted proxies, off by default | `trust-proxy.ts` |

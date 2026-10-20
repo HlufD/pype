@@ -145,8 +145,10 @@ Rules:
 - Matching is case-sensitive.
 - Duplicate slashes and a trailing slash are ignored: `//users//42/` matches
   `/users/:id`.
-- Parameter values are URL-decoded (`/users/a%20b` gives `"a b"`). Malformed
-  escapes are left as they are.
+- Parameter values are URL-decoded (`/users/a%20b` gives `"a b"`). A value
+  with a malformed escape (`/users/%ZZ`) skips the route and passes a 400
+  error (`Failed to decode param '%ZZ'`) to the next error middleware, like
+  Express.
 - When several patterns match, the most specific wins: a static segment beats
   a `:param`, which beats `*`. If a more specific branch fails further down,
   the router backtracks, so with `/users/new` and `/users/:id/edit`
@@ -681,6 +683,10 @@ res.sendFile("/srv/reports/q3.pdf", (err) => {
 - With `root`, `path` is resolved inside it. Paths containing `..` or
   resolving outside `root` get 403, and paths with a null byte get 400.
   Always use `root` for paths that come from the request.
+- Symlinks are followed, like Express, so a symlink inside `root` can serve
+  files from outside it. If users can create files under `root` (an uploads
+  folder, for example), set `followSymlinks: false`: the real path, with
+  symlinks resolved, must then stay inside the real `root`, otherwise 403.
 - Sets `Content-Type` from the extension, `Content-Length`, `Last-Modified`,
   a weak `ETag`, `Cache-Control` and `Accept-Ranges`.
 - Answers 304 for fresh conditional requests and 206 for a single byte range
@@ -702,6 +708,7 @@ res.sendFile("/srv/reports/q3.pdf", (err) => {
 | `etag`         | `true`     | Set `ETag`. |
 | `acceptRanges` | `true`     | Support `Range` requests. |
 | `dotfiles`     | `"ignore"` | Files and folders starting with a dot: `"ignore"` (404), `"deny"` (403) or `"allow"`. |
+| `followSymlinks` | `true`   | With `root`: `false` rejects (403) symlinks whose target is outside `root`. |
 | `headers`      |            | Extra response headers. |
 
 #### `res.download(path, [filename], [options], [callback])`
@@ -750,13 +757,14 @@ Behaviour:
 - Requests without a body, with a different content type, or whose body was
   already parsed by another parser (including the `body-parser` package) are
   passed on unchanged.
-- A whitespace-only JSON body becomes `{}`.
+- An empty JSON body becomes `{}`. A whitespace-only body is a 400
+  `entity.parse.failed`, like `body-parser`.
 - Errors are passed to `next(err)` with `status`, `statusCode`, `expose: true`
   and `type`, like the `body-parser` package:
 
 | Status | `type`                 | When |
 | ------ | ---------------------- | ---- |
-| 400    | `entity.parse.failed`  | Invalid JSON, or a primitive in strict mode |
+| 400    | `entity.parse.failed`  | Invalid JSON (including a whitespace-only body), or a primitive in strict mode |
 | 413    | `entity.too.large`     | The body is larger than `limit` |
 | 415    | `encoding.unsupported` | The body is compressed (`Content-Encoding` isn't `identity`) |
 
@@ -1006,7 +1014,9 @@ Differences:
   the default 100kb unless you need more.
 - **Files**: use `res.sendFile(path, { root })` for paths from the request.
   Traversal outside the root is rejected, dotfiles are hidden by default, and
-  the file is closed when the client disconnects.
+  the file is closed when the client disconnects. Symlinks are followed by
+  default; add `followSymlinks: false` if users can create files under the
+  root.
 - **Errors**: the final handler only exposes the messages of 4xx errors to
   clients and logs every error with `console.error` unless `env` is `"test"`.
   Register your own error middleware to log elsewhere.

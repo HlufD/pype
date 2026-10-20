@@ -264,6 +264,12 @@ function define(app: any, kind: Kind) {
   // Files
   app.get(`/file/${wild}`, (req: any, res: any) => res.sendFile(req.path.slice("/file/".length), { root: decodeURIComponent(root) }));
   app.get("/download", (_req: any, res: any) => res.download(join(root, "hello.txt"), "greeting.txt"));
+  app.get(`/file-no-index/${wild}`, (req: any, res: any) =>
+    res.sendFile(req.path.slice("/file-no-index/".length), { root: decodeURIComponent(root), index: false }),
+  );
+  app.get(`/file-custom-index/${wild}`, (req: any, res: any) =>
+    res.sendFile(req.path.slice("/file-custom-index/".length), { root: decodeURIComponent(root), index: ["default.htm", "index.html"] }),
+  );
 
   app.use((req: any, res: any) => res.status(404).json({ notFound: `${req.method} ${req.path}` }));
   // Error messages are implementation details (Node's JSON.parse wording,
@@ -299,6 +305,11 @@ beforeAll(async () => {
   writeFileSync(join(root, "empty.txt"), "");
   writeFileSync(join(root, "docs", "readme.md"), "# readme");
   writeFileSync(join(root, ".secret"), "hidden");
+  mkdirSync(join(root, "site"));
+  writeFileSync(join(root, "site", "index.html"), "<p>site index</p>");
+  mkdirSync(join(root, "alt"));
+  writeFileSync(join(root, "alt", "default.htm"), "<p>alt default</p>");
+  mkdirSync(join(root, "site", "index.html.d"));
 
   servers = await startPair(define);
 });
@@ -623,6 +634,16 @@ describe("files match Express", () => {
     "/file/....//hello.txt",
     "/file/hello.txt%00.png",
     "/file/hello.txt/",
+    "/file/docs/",
+    "/file/site/",
+    "/file/site",
+    "/file/alt/",
+    "/file-no-index/site/",
+    "/file-no-index/hello.txt/",
+    "/file-no-index/hello.txt",
+    "/file-custom-index/alt/",
+    "/file-custom-index/site/",
+    "/file-custom-index/docs/",
     "/file/HELLO.TXT",
     "/download",
   ])("GET %s", (path) => same(path));

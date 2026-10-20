@@ -846,6 +846,7 @@ res.sendFile("/srv/reports/q3.pdf", (err) => {
 | `etag`         | `true`     | Set `ETag`. |
 | `acceptRanges` | `true`     | Support `Range` requests. |
 | `dotfiles`     | `"ignore"` | Files and folders starting with a dot: `"ignore"` (404), `"deny"` (403) or `"allow"`. |
+| `index`        | `"index.html"` | Files tried, in order, for a path ending in `/`; `false` turns it off. A path ending in `/` never matches a plain file. |
 | `followSymlinks` | `true`   | With `root`: `false` rejects (403) symlinks whose target is outside `root`. |
 | `headers`      |            | Extra response headers. |
 

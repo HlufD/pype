@@ -45,6 +45,11 @@ export interface SendFileOptions {
   etag?: boolean;
   /** Support `Range` requests. Default `true`. */
   acceptRanges?: boolean;
+  /**
+   * Files tried, in order, when the path ends with `/`, like Express's
+   * `send`. Default `"index.html"`; `false` turns it off.
+   */
+  index?: string | string[] | false;
 }
 
 /** Called when a file transfer finishes or fails. */
@@ -540,13 +545,28 @@ export class Response extends ServerResponse<Request> {
     const resolved = this.resolveFilePath(path, opts);
     if (resolved instanceof HttpError) return done(resolved);
 
-    if (opts.root && opts.followSymlinks === false) {
-      return checkRealPath(resolved, opts.root, (error) =>
-        error ? done(error) : this.transferFile(resolved, opts, done),
-      );
+    const send = (file: string) => {
+      if (opts.root && opts.followSymlinks === false) {
+        return checkRealPath(file, opts.root, (error) =>
+          error ? done(error) : this.transferFile(file, opts, done),
+        );
+      }
+      this.transferFile(file, opts, done);
+    };
+
+    // Like Express's send, a trailing slash asks for a directory: its index
+    // file is sent, and a plain file is never matched (Windows would ignore
+    // the slash).
+    if (path.endsWith("/")) {
+      const index = opts.index === false ? [] : [opts.index ?? "index.html"].flat();
+      if (index.length > 0) return sendIndex(resolved, index, send, done);
+      return stat(resolved, (error, stats) => {
+        if (error) return done(error);
+        done(stats.isDirectory() ? Object.assign(new HttpError(404, "EISDIR, read"), { code: "EISDIR" }) : new HttpError(404));
+      });
     }
 
-    this.transferFile(resolved, opts, done);
+    send(resolved);
   }
 
   /** Streams a checked file path, see {@link Response.sendFile}. */
@@ -711,6 +731,29 @@ export class Response extends ServerResponse<Request> {
 
     if (options.headers) this.set(options.headers);
   }
+}
+
+/**
+ * Sends the first of `names` in `dir` that is a file, like `send`'s index
+ * support; 404 (or the last file system error) when there is none.
+ */
+function sendIndex(
+  dir: string,
+  names: string[],
+  send: (file: string) => void,
+  done: (error?: HttpError | NodeJS.ErrnoException) => void,
+) {
+  let i = 0;
+  const next = (error?: NodeJS.ErrnoException) => {
+    if (i >= names.length) return done(error ?? new HttpError(404));
+    const file = join(dir, names[i++]);
+    stat(file, (statError, stats) => {
+      if (statError) return next(statError);
+      if (stats.isDirectory()) return next();
+      send(file);
+    });
+  };
+  next();
 }
 
 /** Error codes of a transfer the client aborted, ignored like Express does. */

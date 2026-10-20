@@ -360,6 +360,11 @@ export class Pype {
 
         if (layer.kind === "route") {
           if (!matchedLayers.has(layer)) continue;
+          // Like Express, a param that fails to decode skips the route with a 400.
+          if (match!.error) {
+            err = err || match!.error;
+            continue;
+          }
           current = layer;
           return this.runRoute(req, res, layer, match!.params, method, err, next);
         }

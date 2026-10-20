@@ -17,6 +17,8 @@ interface MatchResult {
   params: Record<string, string>;
   /** Metadata of the matched route. */
   route: RouteMeta;
+  /** Set when a param value has a malformed escape, `params` is then empty. */
+  error?: Error;
 }
 
 /** Path normalization options. */
@@ -181,11 +183,15 @@ class RouteNode {
     if (!node) return null;
 
     const entry = node.entries.get(method)!;
-    return {
-      handlers: entry.handlers,
-      params: node.buildParams(values, decode),
-      route: entry.route,
-    };
+    try {
+      return {
+        handlers: entry.handlers,
+        params: node.buildParams(values, decode),
+        route: entry.route,
+      };
+    } catch (error) {
+      return { handlers: entry.handlers, params: {}, route: entry.route, error: error as Error };
+    }
   }
 
   /**
@@ -461,15 +467,17 @@ function hasPrefixAt(path: string, prefix: string, index: number) {
 }
 
 /**
- * Decodes percent-escapes. Values without `%` skip decoding, and malformed
- * escapes are returned unchanged.
+ * Decodes percent-escapes. Values without `%` skip decoding.
+ *
+ * @throws A 400 error for malformed escapes, same message as Express.
  */
 function decode(value: string) {
   if (value.indexOf("%") === -1) return value;
   try {
     return decodeURIComponent(value);
   } catch {
-    return value;
+    const error = new URIError(`Failed to decode param '${value}'`);
+    throw Object.assign(error, { status: 400, statusCode: 400 });
   }
 }
 

@@ -120,3 +120,51 @@ describe("query and form parsing", () => {
     expect(({} as any).constructor).toBe(Object);
   });
 });
+
+describe("malformed param escapes", () => {
+  let api: Server;
+  let base: string;
+  const seen: string[] = [];
+
+  beforeAll(async () => {
+    const app = new Pype();
+    app.use((_req: Request, _res: Response, next: NextFunction) => {
+      seen.push("middleware");
+      next();
+    });
+    app.get("/users/:id", (req: Request, res: Response) => {
+      seen.push("route");
+      res.json(req.params);
+    });
+    app.get("/handled/:id", (_req: Request, res: Response) => res.send("route"));
+    app.use("/handled", (err: any, _req: Request, res: Response, _next: NextFunction) => {
+      res.status(err.status).json({ caught: err.message });
+    });
+
+    api = app.listen(0);
+    await new Promise((resolve) => api.once("listening", resolve));
+    base = `http://127.0.0.1:${(api.address() as AddressInfo).port}`;
+  });
+
+  afterAll(() => {
+    api.close();
+  });
+
+  it("answers 400 like Express and skips the route, but not earlier middleware", async () => {
+    seen.length = 0;
+    const reply = await fetch(`${base}/users/%ZZ`);
+    expect(reply.status).toBe(400);
+    expect(await reply.json()).toEqual({ error: "Failed to decode param '%ZZ'", status: 400 });
+    expect(seen).toEqual(["middleware"]);
+  });
+
+  it("passes the error to error middleware", async () => {
+    const reply = await fetch(`${base}/handled/%E0%A4%A`);
+    expect(reply.status).toBe(400);
+    expect(await reply.json()).toEqual({ caught: "Failed to decode param '%E0%A4%A'" });
+  });
+
+  it("still decodes valid escapes", async () => {
+    expect(await (await fetch(`${base}/users/a%20b`)).json()).toEqual({ id: "a b" });
+  });
+});

@@ -749,3 +749,26 @@ describe("RouteNode with normalization disabled", () => {
     });
   });
 });
+
+describe("Matching – param decoding", () => {
+  const router = new RouteNode({ ignoreDuplicateSlashes: true, ignoreTrailingSlash: true });
+  router.register("/users/:id", HTTP_METHODS.GET, [() => {}]);
+  router.register("/files/*", HTTP_METHODS.GET, [() => {}]);
+
+  it("decodes valid escapes", () => {
+    const result = router.match("/users/a%20b", HTTP_METHODS.GET);
+    expect(result!.params).toEqual({ id: "a b" });
+    expect(result!.error).toBeUndefined();
+  });
+
+  it.each(["/users/%ZZ", "/users/%E0%A4%A", "/users/%", "/files/a/%zz"])(
+    "reports a 400 error for the malformed escape in %s",
+    (path) => {
+      const result = router.match(path, HTTP_METHODS.GET);
+      expect(result!.params).toEqual({});
+      expect(result!.error).toBeInstanceOf(URIError);
+      expect(result!.error).toMatchObject({ status: 400, statusCode: 400 });
+      expect(result!.error!.message).toMatch(/^Failed to decode param '/);
+    },
+  );
+});

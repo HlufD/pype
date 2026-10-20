@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { request as httpRequest, Server } from "http";
 import { AddressInfo } from "net";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { Pype } from "../src/core/server";
 import { Request } from "../src/core/request";
 import { Response } from "../src/core/response";
@@ -166,5 +169,69 @@ describe("malformed param escapes", () => {
 
   it("still decodes valid escapes", async () => {
     expect(await (await fetch(`${base}/users/a%20b`)).json()).toEqual({ id: "a b" });
+  });
+});
+
+describe("res.sendFile() and symlinks", () => {
+  // tmp/public/escape -> tmp/secret, tmp/public/inner -> tmp/public/docs,
+  // and tmp/link-root -> tmp/public to check a symlinked root.
+  const dir = mkdtempSync(join(tmpdir(), "pype-symlink-"));
+  const publicDir = join(dir, "public");
+  let api: Server;
+  let base: string;
+
+  beforeAll(async () => {
+    mkdirSync(join(publicDir, "docs"), { recursive: true });
+    mkdirSync(join(dir, "secret"));
+    writeFileSync(join(publicDir, "docs", "readme.txt"), "readme");
+    writeFileSync(join(dir, "secret", "key.txt"), "TOP-SECRET");
+    symlinkSync(join(dir, "secret"), join(publicDir, "escape"));
+    symlinkSync(join(publicDir, "docs"), join(publicDir, "inner"));
+    symlinkSync(publicDir, join(dir, "link-root"));
+
+    const app = new Pype();
+    app.get("/follow/*", (req: Request, res: Response) => res.sendFile(req.params["*"], { root: publicDir }));
+    app.get("/strict/*", (req: Request, res: Response) =>
+      res.sendFile(req.params["*"], { root: publicDir, followSymlinks: false }),
+    );
+    app.get("/linked-root/*", (req: Request, res: Response) =>
+      res.sendFile(req.params["*"], { root: join(dir, "link-root"), followSymlinks: false }),
+    );
+    app.get("/download/*", (req: Request, res: Response) =>
+      res.download(req.params["*"], { root: publicDir, followSymlinks: false }),
+    );
+
+    api = app.listen(0);
+    await new Promise((resolve) => api.once("listening", resolve));
+    base = `http://127.0.0.1:${(api.address() as AddressInfo).port}`;
+  });
+
+  afterAll(() => {
+    api.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("follows symlinks out of the root by default, like Express", async () => {
+    const reply = await fetch(`${base}/follow/escape/key.txt`);
+    expect(reply.status).toBe(200);
+    expect(await reply.text()).toBe("TOP-SECRET");
+  });
+
+  it("rejects symlinks that lead outside the root with followSymlinks: false", async () => {
+    for (const prefix of ["strict", "download"]) {
+      const reply = await fetch(`${base}/${prefix}/escape/key.txt`);
+      expect(reply.status).toBe(403);
+      expect(await reply.text()).not.toContain("TOP-SECRET");
+    }
+  });
+
+  it("allows symlinks that stay inside the root and a symlinked root", async () => {
+    expect(await (await fetch(`${base}/strict/inner/readme.txt`)).text()).toBe("readme");
+    expect(await (await fetch(`${base}/strict/docs/readme.txt`)).text()).toBe("readme");
+    expect(await (await fetch(`${base}/linked-root/docs/readme.txt`)).text()).toBe("readme");
+  });
+
+  it("answers 404 for missing files with followSymlinks: false", async () => {
+    expect((await fetch(`${base}/strict/missing.txt`)).status).toBe(404);
   });
 });

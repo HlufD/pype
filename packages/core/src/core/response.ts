@@ -1,5 +1,5 @@
 import { ServerResponse, STATUS_CODES } from "http";
-import { createReadStream, stat } from "fs";
+import { createReadStream, realpath, stat } from "fs";
 import { pipeline } from "stream";
 import { basename, extname, isAbsolute, join, resolve, sep } from "path";
 import type { Request } from "./request";
@@ -24,6 +24,12 @@ export interface SendFileOptions {
   headers?: Record<string, string>;
   /** How to treat dotfiles: `"ignore"` (404, default), `"deny"` (403) or `"allow"`. */
   dotfiles?: "allow" | "deny" | "ignore";
+  /**
+   * Follow symlinks that point outside `root`. Default `true`, like Express.
+   * With `false` the real path must stay inside the real `root`, otherwise 403.
+   * Only applies with `root`.
+   */
+  followSymlinks?: boolean;
   /** `Cache-Control` max-age in milliseconds. Default 0. */
   maxAge?: number;
   /** Adds `immutable` to `Cache-Control`. */
@@ -438,7 +444,8 @@ export class Response extends ServerResponse<Request> {
    * Streams a file.
    *
    * Without `root` the path must be absolute. With `root`, paths containing
-   * `..` are rejected. Supports single byte ranges and conditional GETs.
+   * `..` are rejected, and with `followSymlinks: false` so are symlinks that
+   * lead outside it. Supports single byte ranges and conditional GETs.
    * Without a callback, errors are answered with 404 for missing files and
    * the matching status otherwise. The file stream is closed when the client
    * disconnects, and the callback then receives the premature-close error.
@@ -485,6 +492,21 @@ export class Response extends ServerResponse<Request> {
     const resolved = this.resolveFilePath(path, opts);
     if (resolved instanceof HttpError) return done(resolved);
 
+    if (opts.root && opts.followSymlinks === false) {
+      return checkRealPath(resolved, opts.root, (error) =>
+        error ? done(error) : this.transferFile(resolved, opts, done),
+      );
+    }
+
+    this.transferFile(resolved, opts, done);
+  }
+
+  /** Streams a checked file path, see {@link Response.sendFile}. */
+  private transferFile(
+    resolved: string,
+    opts: SendFileOptions,
+    done: (error?: HttpError | NodeJS.ErrnoException) => void,
+  ) {
     stat(resolved, (error, stats) => {
       if (error) return done(error);
       if (stats.isDirectory()) return done(new HttpError(404));
@@ -648,4 +670,26 @@ function errorStatus(error: NodeJS.ErrnoException): number {
     error.code === "ENOTDIR"
     ? 404
     : 500;
+}
+
+/**
+ * Checks that the real path of `file`, with symlinks resolved, stays inside
+ * the real path of `root`. Calls back with a 403 when it leads outside, or
+ * the file system error (e.g. ENOENT for a missing file).
+ */
+function checkRealPath(
+  file: string,
+  root: string,
+  callback: (error?: HttpError | NodeJS.ErrnoException) => void,
+) {
+  realpath(root, (rootError, realRoot) => {
+    if (rootError) return callback(rootError);
+
+    realpath(file, (fileError, realFile) => {
+      if (fileError) return callback(fileError);
+      if (realFile !== realRoot && !realFile.startsWith(realRoot + sep))
+        return callback(new HttpError(403));
+      callback();
+    });
+  });
 }

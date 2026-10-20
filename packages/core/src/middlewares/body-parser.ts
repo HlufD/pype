@@ -1,5 +1,9 @@
+import { Transform } from "stream";
+import { createBrotliDecompress, createGunzip, createInflate } from "zlib";
 import { Middleware } from "../types/middleware";
 import { Request } from "../core/request";
+import type { Response } from "../core/response";
+import { parseQs } from "../utils/qs";
 
 /** Options shared by all body parsers. */
 export interface BodyParserOptions {
@@ -7,12 +11,39 @@ export interface BodyParserOptions {
   limit?: number | string;
   /** Content types to parse, or a predicate. Defaults depend on the parser. */
   type?: string | string[] | ((req: Request) => boolean);
+  /** Decompress `gzip`, `deflate` and `br` bodies. Default `true`; with `false` they are a 415. */
+  inflate?: boolean;
+  /** Charset when the `Content-Type` has none. Default `"utf-8"`. */
+  defaultCharset?: string;
+  /**
+   * Called with the raw (decompressed) body before it is parsed. Throw to
+   * reject the request with a 403, `type` defaults to `entity.verify.failed`.
+   */
+  verify?: (req: Request, res: Response, body: Buffer, charset: string | null) => void;
 }
 
 /** Options for {@link json}. */
 export interface JsonOptions extends BodyParserOptions {
   /** Only accept objects and arrays. Default `true`. */
   strict?: boolean;
+  /** Passed to `JSON.parse`. */
+  reviver?: (this: any, key: string, value: any) => any;
+}
+
+/** Options for {@link urlencoded}. */
+export interface UrlencodedOptions extends BodyParserOptions {
+  /** Parse nested keys like `a[b]=c` and arrays like `a[]=1`. Default `false`. */
+  extended?: boolean;
+  /** Max parameters, more is a 413. Default 1000. */
+  parameterLimit?: number;
+  /** Max nesting depth with `extended`, deeper is a 400. Default 32. */
+  depth?: number;
+  /** Read the charset from a `utf8=` parameter. Default `false`. */
+  charsetSentinel?: boolean;
+  /** Decode `&#nnn;` entities in ISO-8859-1 bodies. Default `false`. */
+  interpretNumericEntities?: boolean;
+  /** `"utf-8"` or `"iso-8859-1"`. Default `"utf-8"`. */
+  defaultCharset?: "utf-8" | "iso-8859-1";
 }
 
 /** Body parsing error, shaped like `http-errors` so error middleware can read `status` and `expose`. */
@@ -82,20 +113,39 @@ function tooLarge(limit: number, length: number) {
   });
 }
 
+/** Decompressors for the encodings `body-parser` inflates. */
+const DECOMPRESSORS: Record<string, () => Transform> = {
+  gzip: createGunzip,
+  deflate: createInflate,
+  br: createBrotliDecompress,
+};
+
 /**
- * Reads the whole request body.
+ * Reads the whole request body, decompressing it for a `Content-Encoding`
+ * other than `identity`.
+ *
+ * `limit` applies to the decompressed bytes and reading stops as soon as it
+ * is passed, so a small compressed body can't expand without bound. A
+ * declared `Content-Length` above the limit is rejected before reading, for
+ * uncompressed bodies only.
  *
  * @param limit - Max body size in bytes.
- * @returns The body. Rejects with a 413 when it exceeds `limit` and with a
- * 400 `request.aborted` when the client disconnects first, like `raw-body`.
+ * @param encoding - The lower-cased `Content-Encoding`, `identity` or a key of {@link DECOMPRESSORS}.
+ * @returns The body. Rejects with a 413 when it exceeds `limit`, a 400
+ * `request.aborted` when the client disconnects first, like `raw-body`, and a
+ * 400 without `type` when the compressed data is invalid, like `body-parser`.
  */
-function readBody(req: Request, limit: number): Promise<Buffer> {
+function readBody(req: Request, limit: number, encoding: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const declared = Number(req.headers["content-length"]);
-    if (!Number.isNaN(declared) && declared > limit) {
+    if (encoding === "identity" && !Number.isNaN(declared) && declared > limit) {
       req.resume();
       return reject(tooLarge(limit, declared));
     }
+
+    const decompressor = encoding === "identity" ? null : DECOMPRESSORS[encoding]();
+    const stream = decompressor ?? req;
+    if (decompressor) req.pipe(decompressor);
 
     const chunks: Buffer[] = [];
     let received = 0;
@@ -103,20 +153,27 @@ function readBody(req: Request, limit: number): Promise<Buffer> {
 
     const cleanup = () => {
       settled = true;
-      req.removeListener("data", onData);
-      req.removeListener("end", onEnd);
+      stream.removeListener("data", onData);
+      stream.removeListener("end", onEnd);
+      stream.removeListener("error", onStreamError);
       req.removeListener("error", onError);
       req.removeListener("close", onClose);
+      if (decompressor) {
+        req.unpipe(decompressor);
+        decompressor.destroy();
+      }
+    };
+
+    // Drops the rest of the request so the connection can be reused.
+    const fail = (error: BodyParseError) => {
+      cleanup();
+      req.resume();
+      reject(error);
     };
 
     const onData = (chunk: Buffer) => {
       received += chunk.length;
-      if (received > limit) {
-        cleanup();
-        req.resume();
-        reject(tooLarge(limit, received));
-        return;
-      }
+      if (received > limit) return fail(tooLarge(limit, received));
       chunks.push(chunk);
     };
 
@@ -127,19 +184,24 @@ function readBody(req: Request, limit: number): Promise<Buffer> {
 
     const onError = (error: Error) => {
       if (settled) return;
-      cleanup();
-      reject(req.aborted ? aborted(received) : new BodyParseError(400, error.message));
+      fail(req.aborted ? aborted(received) : new BodyParseError(400, error.message));
+    };
+
+    const onStreamError = (error: Error) => {
+      if (settled) return;
+      if (!decompressor) return onError(error);
+      fail(Object.assign(new BodyParseError(400, error.message), { type: undefined }));
     };
 
     const onClose = () => {
       if (settled || req.complete) return;
-      cleanup();
-      reject(aborted(received));
+      fail(aborted(received));
     };
 
-    req.on("data", onData);
-    req.on("end", onEnd);
-    req.on("error", onError);
+    stream.on("data", onData);
+    stream.on("end", onEnd);
+    stream.on("error", onStreamError);
+    if (decompressor) req.on("error", onError);
     req.on("close", onClose);
   });
 }
@@ -230,18 +292,24 @@ function createParser(
   parse: Parse,
 ): Middleware {
   const limit = parseBytes(options.limit ?? "100kb");
+  const inflate = options.inflate !== false;
+  const defaultCharset = options.defaultCharset || "utf-8";
+  const verify = options.verify;
+  if (verify !== undefined && typeof verify !== "function") {
+    throw new TypeError("option verify must be function");
+  }
   const type = options.type ?? config.defaultType;
   const shouldParse =
     typeof type === "function"
       ? type
       : (req: Request) => Boolean(req.is(...[type].flat()));
 
-  return async (req, _res, next) => {
+  return async (req, res, next) => {
     if (req._body || req.body !== undefined || req.readableEnded || !shouldParse(req)) {
       return next();
     }
 
-    const charset = charsetOf(req.headers["content-type"]) || "utf-8";
+    const charset = charsetOf(req.headers["content-type"]) || defaultCharset;
     if (config.isValidCharset && !config.isValidCharset(charset)) {
       return next(unsupportedCharset(charset));
     }
@@ -249,18 +317,28 @@ function createParser(
     const encoding = (
       req.headers["content-encoding"] || "identity"
     ).toLowerCase();
-    if (encoding !== "identity") {
-      return next(
-        Object.assign(
-          new BodyParseError(415, `unsupported content encoding "${encoding}"`, "encoding.unsupported"),
-          { encoding },
-        ),
-      );
+    if (encoding !== "identity" && (!inflate || !DECOMPRESSORS[encoding])) {
+      const message = inflate ? `unsupported content encoding "${encoding}"` : "content encoding unsupported";
+      return next(Object.assign(new BodyParseError(415, message, "encoding.unsupported"), { encoding }));
     }
 
     let body: unknown;
     try {
-      const raw = await readBody(req, limit);
+      const raw = await readBody(req, limit, encoding);
+
+      if (verify) {
+        try {
+          verify(req, res, raw, config.isValidCharset ? charset : null);
+        } catch (error) {
+          const verifyError = error as Error & { type?: string };
+          return next(
+            Object.assign(new BodyParseError(403, verifyError.message, verifyError.type || "entity.verify.failed"), {
+              body: raw,
+            }),
+          );
+        }
+      }
+
       const decoded = config.isValidCharset ? decode(raw, charset) : raw;
       if (decoded === null) return next(unsupportedCharset(charset));
       body = parse(decoded, charset);
@@ -318,90 +396,69 @@ export function json(options: JsonOptions = {}): Middleware {
       if (first !== "{" && first !== "[") throw strictError(text, first);
     }
 
-    return JSON.parse(text);
+    return JSON.parse(text, options.reviver);
   });
 }
 
 /**
- * Parses `application/x-www-form-urlencoded` bodies like `body-parser` with
- * `extended: false`: repeated keys become arrays, `+` is a space, empty keys
- * and `__proto__` are dropped, and more than 1000 parameters is a 413. The
- * result has no prototype. Charsets: UTF-8 and ISO-8859-1, otherwise 415.
+ * Parses `application/x-www-form-urlencoded` bodies like `body-parser`, with
+ * the rules of `qs`. Without `extended`, keys are flat: repeated keys become
+ * arrays, a key wrapped in brackets loses them and `[]` keys become `0`,
+ * `1`, ...; with `extended`, `a[b]=c` and `a[]=1` build nested objects and
+ * arrays. More than `parameterLimit` parameters is a 413, keys deeper than
+ * `depth` a 400. Empty and `__proto__` keys are dropped and objects have no
+ * prototype. Charsets: UTF-8 and ISO-8859-1, otherwise 415.
+ *
+ * @throws When `defaultCharset`, `parameterLimit` or `depth` is invalid.
  */
-export function urlencoded(options: BodyParserOptions = {}): Middleware {
+export function urlencoded(options: UrlencodedOptions = {}): Middleware {
+  const defaultCharset = options.defaultCharset || "utf-8";
+  if (defaultCharset !== "utf-8" && defaultCharset !== "iso-8859-1") {
+    throw new TypeError("option defaultCharset must be either utf-8 or iso-8859-1");
+  }
+
+  const extended = Boolean(options.extended);
+  let parameterLimit = options.parameterLimit ?? 1000;
+  const depth = extended ? (options.depth ?? 32) : 0;
+  if (Number.isNaN(parameterLimit) || parameterLimit < 1) {
+    throw new TypeError("option parameterLimit must be a positive number");
+  }
+  if (Number.isNaN(depth) || depth < 0) {
+    throw new TypeError("option depth must be a zero or a positive number");
+  }
+  if (Number.isFinite(parameterLimit)) parameterLimit = parameterLimit | 0;
+
   const config = {
     defaultType: "urlencoded",
     isValidCharset: (charset: string) => charset === "utf-8" || charset === "iso-8859-1",
   };
-  return createParser(config, options, (body, charset) => parseForm(body as string, charset));
-}
 
-/** Max number of parameters in a form body, `body-parser`'s default `parameterLimit`. */
-const PARAMETER_LIMIT = 1000;
+  return createParser(config, { ...options, defaultCharset }, (body, charset) => {
+    const text = body as string;
+    if (text.length === 0) return Object.create(null);
 
-/** A form value: repeated keys collect their values in an array. */
-type FormValue = string | string[];
-
-/**
- * Parses a form body with the rules of `qs` at depth 0, which `body-parser`
- * uses for `extended: false`: values of repeated keys are collected, a key
- * wrapped in brackets loses them (`[a]` is `a`), `[]` keys become the
- * indexes `0`, `1`, ..., and empty or `__proto__` keys are dropped.
- */
-function parseForm(body: string, charset: string): Record<string, FormValue> {
-  const form: Record<string, FormValue> = Object.create(null);
-  if (body.length === 0) return form;
-
-  const parts = body.replace(/%5B/gi, "[").replace(/%5D/gi, "]").split("&");
-  if (parts.length > PARAMETER_LIMIT) {
-    throw new BodyParseError(413, "too many parameters", "parameters.too.many");
-  }
-
-  const values: Record<string, FormValue> = Object.create(null);
-  for (const part of parts) {
-    // Like qs, a "]=" ends the key, so "a]=b=c" has the key "a]".
-    const bracketEquals = part.indexOf("]=");
-    const eq = bracketEquals === -1 ? part.indexOf("=") : bracketEquals + 1;
-    const key = decodeFormComponent(eq === -1 ? part : part.slice(0, eq), charset);
-    const value = eq === -1 ? "" : decodeFormComponent(part.slice(eq + 1), charset);
-    values[key] = key in values ? ([] as string[]).concat(values[key], value) : value;
-  }
-
-  for (const key of Object.keys(values)) {
-    if (key === "") continue;
-    const value = values[key];
-
-    if (key === "[]") {
-      ([] as string[]).concat(value).forEach((item, index) => mergeFormValue(form, String(index), item));
-      continue;
+    const count = text.split("&").length;
+    if (count > parameterLimit) {
+      throw new BodyParseError(413, "too many parameters", "parameters.too.many");
     }
 
-    const name = key.length > 1 && key.startsWith("[") && key.endsWith("]") ? key.slice(1, -1) : key;
-    if (name !== "__proto__") mergeFormValue(form, name, value);
-  }
-
-  return form;
-}
-
-/** Adds a value to a form key, collecting values like `qs`' `merge`. */
-function mergeFormValue(form: Record<string, FormValue>, key: string, value: FormValue) {
-  const existing = form[key];
-  if (existing === undefined) form[key] = value;
-  else if (Array.isArray(existing)) existing.push(...([] as string[]).concat(value));
-  else form[key] = ([existing] as string[]).concat(value);
-}
-
-/** Decodes `+` and percent-escapes, leaving malformed escapes as they are, like `qs`. */
-function decodeFormComponent(value: string, charset: string): string {
-  const text = value.replace(/\+/g, " ");
-  if (charset === "iso-8859-1") {
-    return text.replace(/%[0-9a-f]{2}/gi, (escape) => String.fromCharCode(parseInt(escape.slice(1), 16)));
-  }
-  try {
-    return decodeURIComponent(text);
-  } catch {
-    return text;
-  }
+    try {
+      return parseQs(text, {
+        arrayLimit: extended ? Math.max(100, count) : count,
+        depth,
+        charsetSentinel: options.charsetSentinel,
+        interpretNumericEntities: options.interpretNumericEntities,
+        charset: charset as "utf-8" | "iso-8859-1",
+        parameterLimit,
+        strictDepth: true,
+      });
+    } catch (error) {
+      if (error instanceof RangeError) {
+        throw new BodyParseError(400, "The input exceeded the depth", "querystring.parse.rangeError");
+      }
+      throw error;
+    }
+  });
 }
 
 /** Reads `text/plain` bodies into `req.body` as a string, in any charset Node can decode. */

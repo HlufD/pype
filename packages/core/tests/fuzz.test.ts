@@ -9,6 +9,7 @@ import { Pype } from "../src/core/server";
 import { Request } from "../src/core/request";
 import { Response } from "../src/core/response";
 import { RouteNode } from "../src/utils/Trie-Route";
+import { parseQs } from "../src/utils/qs";
 import { HTTP_METHODS } from "../src/enums/methods.enum";
 import {
   contentDisposition,
@@ -253,5 +254,49 @@ describe("HTTP", () => {
       }),
       { numRuns: RUNS },
     );
+  });
+});
+
+describe("the qs port", () => {
+  // The real package, only used by the tests.
+  const qs = require("qs") as typeof import("qs");
+  const piece = fc.constantFrom(
+    "a", "b", "0", "1", "5", "25", "[", "]", "[]", "[0]", "[1]", "[25]", "[a]", "=", "&", "%5B", "%5D", "%",
+    "%E9", "%C3%A9", "+", "x", "__proto__", "constructor", ".", "utf8=%E2%9C%93", "utf8=%26%2310003%3B", "&#233;",
+  );
+  const options = fc.record({
+    arrayLimit: fc.constantFrom(0, 1, 2, 5, 20),
+    depth: fc.constantFrom(0, 1, 2, 5),
+    parameterLimit: fc.constantFrom(1, 3, 1000),
+    strictDepth: fc.boolean(),
+    charset: fc.constantFrom("utf-8" as const, "iso-8859-1" as const),
+    charsetSentinel: fc.boolean(),
+    interpretNumericEntities: fc.boolean(),
+  });
+
+  const outcome = (parse: () => unknown) => {
+    try {
+      return { value: JSON.stringify(parse()) };
+    } catch (error) {
+      return { error: (error as Error).constructor.name + ": " + (error as Error).message };
+    }
+  };
+
+  it("parses exactly like qs.parse with allowPrototypes and plainObjects", () => {
+    fc.assert(
+      fc.property(fc.array(piece, { maxLength: 24 }).map((p) => p.join("")), options, (input, opts) => {
+        expect(outcome(() => parseQs(input, opts))).toEqual(
+          outcome(() => qs.parse(input, { ...opts, allowPrototypes: true, plainObjects: true })),
+        );
+      }),
+      { numRuns: RUNS * 4 },
+    );
+  });
+
+  it("creates objects without a prototype and never pollutes Object.prototype", () => {
+    const parsed = parseQs("__proto__[polluted]=1&a[__proto__][polluted]=1&constructor[prototype][polluted]=1", { depth: 5 });
+    expect(Object.getPrototypeOf(parsed)).toBeNull();
+    expect(({} as any).polluted).toBeUndefined();
+    expect(Object.getPrototypeOf(parsed.constructor)).toBeNull();
   });
 });

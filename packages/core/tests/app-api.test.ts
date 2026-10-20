@@ -371,8 +371,15 @@ describe("body parsers", () => {
     }
   });
 
-  it("rejects compressed bodies", async () => {
-    expect((await post("/json", "{}", { "Content-Encoding": "gzip" })).status).toBe(415);
+  it("stops inflating a compressed body once it passes the limit", async () => {
+    const { gzipSync } = await import("zlib");
+    // 50 MB of zeros compress to about 50 KB: a decompression bomb for a 20 byte limit.
+    const bomb = gzipSync(Buffer.alloc(50 * 1024 * 1024));
+    const started = performance.now();
+    const reply = await post("/json", bomb as any, { "Content-Encoding": "gzip" });
+    expect(reply.status).toBe(413);
+    expect(JSON.parse(reply.text).error).toBe("request entity too large");
+    expect(performance.now() - started).toBeLessThan(2000);
   });
 
   it("reads raw bodies", async () => {

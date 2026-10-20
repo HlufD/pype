@@ -332,9 +332,19 @@ describe("body parsers", () => {
   const post = (path: string, body: string, headers: Record<string, string> = {}) =>
     api.send(path, { method: "POST", body, headers: { "Content-Type": "application/json", ...headers } });
 
-  it("treats a whitespace-only JSON body as an empty object and skips missing bodies", async () => {
-    expect(JSON.parse((await post("/json", "  ")).text)).toEqual({ body: {} });
+  it("treats an empty JSON body as an empty object and skips missing bodies", async () => {
+    expect(JSON.parse((await post("/json", "", { "Transfer-Encoding": "chunked" })).text)).toEqual({ body: {} });
     expect(JSON.parse((await post("/json", "")).text)).toEqual({});
+  });
+
+  it("rejects whitespace-only JSON bodies like body-parser", async () => {
+    for (const path of ["/json", "/json-loose"]) {
+      for (const body of ["  ", "\n", " \t\r\n"]) {
+        const reply = await post(path, body);
+        expect(reply.status).toBe(400);
+        expect(JSON.parse(reply.text).error).toBeTruthy();
+      }
+    }
   });
 
   it("rejects primitives in strict mode and accepts them otherwise", async () => {

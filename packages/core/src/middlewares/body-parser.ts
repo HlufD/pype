@@ -154,15 +154,19 @@ function createParser(
   };
 }
 
-/** Parses `application/json` bodies into `req.body`. An empty body becomes `{}`. */
+/**
+ * Parses `application/json` bodies into `req.body`. An empty body becomes `{}`,
+ * a whitespace-only body is a 400 like `body-parser`.
+ */
 export function json(options: JsonOptions = {}): Middleware {
   const strict = options.strict ?? true;
 
   return createParser("json", options, (body) => {
+    if (body.length === 0) return {};
     const text = body.toString("utf8");
-    if (text.trim() === "") return {};
 
     if (strict && !/^\s*[{[]/.test(text)) {
+      if (text.trim() === "") throw new BodyParseError(400, "Unexpected end of JSON input");
       throw new BodyParseError(400, "JSON body must be an object or array");
     }
 

@@ -12,6 +12,12 @@ const COOKIE_VALUE = /^[\x21\x23-\x2b\x2d-\x3a\x3c-\x5b\x5d-\x7e]*$/;
 /** Attribute values such as Domain and Path: printable, without `;`. */
 const COOKIE_ATTRIBUTE = /^[\x20-\x3a\x3c-\x7e]*$/;
 
+/** Allowed `Priority` values, like the `cookie` package. */
+const PRIORITIES = new Map([["low", "Low"], ["medium", "Medium"], ["high", "High"]]);
+
+/** Allowed `SameSite` values, like the `cookie` package. */
+const SAME_SITE = new Map([["lax", "Lax"], ["strict", "Strict"], ["none", "None"]]);
+
 /**
  * Builds a `Set-Cookie` header value.
  *
@@ -19,7 +25,8 @@ const COOKIE_ATTRIBUTE = /^[\x20-\x3a\x3c-\x7e]*$/;
  * @param value - Cookie value, encoded with `options.encode`.
  * @param options - Cookie attributes.
  * @throws TypeError when the name, encoded value, domain or path contains
- * characters that would break or inject into the header.
+ * characters that would break or inject into the header, or `priority` or
+ * `sameSite` isn't one of the allowed values.
  */
 function serializeCookie(
   name: string,
@@ -74,20 +81,18 @@ function serializeCookie(
   if (options.partitioned) cookie += `; Partitioned`;
 
   if (options.priority) {
-    const priority = options.priority.toLowerCase();
-    cookie += `; Priority=${priority.charAt(0).toUpperCase()}${priority.slice(1)}`;
+    const priority = PRIORITIES.get(String(options.priority).toLowerCase());
+    if (!priority) throw new TypeError(`Invalid cookie priority: ${options.priority}`);
+    cookie += `; Priority=${priority}`;
   }
 
   if (options.sameSite) {
     const sameSite =
       options.sameSite === true
         ? "Strict"
-        : typeof options.sameSite === "string"
-          ? options.sameSite.charAt(0).toUpperCase() +
-            options.sameSite.slice(1).toLowerCase()
-          : undefined;
-
-    if (sameSite) cookie += `; SameSite=${sameSite}`;
+        : SAME_SITE.get(String(options.sameSite).toLowerCase());
+    if (!sameSite) throw new TypeError(`Invalid cookie sameSite: ${options.sameSite}`);
+    cookie += `; SameSite=${sameSite}`;
   }
 
   return cookie;

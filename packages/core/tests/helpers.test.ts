@@ -33,6 +33,24 @@ describe("serializeCookie", () => {
   });
 });
 
+describe("serializeCookie priority and sameSite", () => {
+  it("accepts the allowed values in any case", () => {
+    expect(serializeCookie("a", "b", { priority: "HIGH" as any })).toContain("; Priority=High");
+    expect(serializeCookie("a", "b", { sameSite: "none" })).toContain("; SameSite=None");
+    expect(serializeCookie("a", "b", { sameSite: "Lax" as any })).toContain("; SameSite=Lax");
+    expect(serializeCookie("a", "b", { sameSite: true })).toContain("; SameSite=Strict");
+    expect(serializeCookie("a", "b", { sameSite: false })).not.toContain("SameSite");
+  });
+
+  it.each(["Bogus", "constructor", "toString", "low; HttpOnly"])(
+    "throws a TypeError for the invalid value %s, like the cookie package",
+    (value) => {
+      expect(() => serializeCookie("a", "b", { priority: value as any })).toThrow(TypeError);
+      expect(() => serializeCookie("a", "b", { sameSite: value as any })).toThrow(TypeError);
+    },
+  );
+});
+
 describe("signCookie", () => {
   it("matches the cookie-signature package", () => {
     for (const value of ["hello", "", "j:{\"a\":1}", "ünïcode"]) {

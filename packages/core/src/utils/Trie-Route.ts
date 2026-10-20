@@ -394,12 +394,22 @@ class RouteNode {
   /**
    * Checks a route path before registration.
    *
-   * @throws When the path doesn't start with `/`, or an optional param or
-   * wildcard isn't at the end.
+   * @throws When the path doesn't start with `/`, a `:param` doesn't take a
+   * whole segment or has an invalid name, or an optional param or wildcard
+   * isn't at the end.
    */
   private validateUrl(url: string) {
     if (!url.startsWith("/")) {
       throw new Error(`Invalid URL: ${url}. URL must start with a '/'`);
+    }
+
+    for (const segment of url.split("/")) {
+      if (!segment.includes(":")) continue;
+      if (!PARAM_SEGMENT.test(segment)) {
+        throw new Error(
+          `Invalid URL: ${url}. A parameter must take a whole segment and its name must be letters, digits, '_' or '$', got '${segment}'`,
+        );
+      }
     }
 
     if (url.includes("?") && !url.endsWith("?")) {
@@ -415,6 +425,9 @@ class RouteNode {
     }
   }
 }
+
+/** A whole-segment param: `:name` or `:name?`, the name a JS identifier. */
+const PARAM_SEGMENT = /^:[A-Za-z_$][\w$]*\??$/;
 
 /** Creates a route's params object from the raw values of a match. */
 type ParamsBuilder = (

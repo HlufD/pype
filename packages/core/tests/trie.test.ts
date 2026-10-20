@@ -501,6 +501,22 @@ describe("RouteNode with normalization enabled", () => {
       ).not.toThrow();
     });
 
+    it.each(["/:id_2", "/:$x", "/users/:userId?", "/a/:A1/b"])(
+      "should allow the param segment in %s",
+      (path) => {
+        expect(() => router.register(path, HTTP_METHODS.GET, [() => {}])).not.toThrow();
+      },
+    );
+
+    it.each(["/:from-:to", "/b/:", "/a-:id", "/a/:id*", "/:1abc", "/a/:id.json", "/a/:?"])(
+      "should throw for the unsupported param segment in %s",
+      (path) => {
+        expect(() => router.register(path, HTTP_METHODS.GET, [() => {}])).toThrow(
+          /A parameter must take a whole segment/,
+        );
+      },
+    );
+
     it("should throw if URL does not start with /", () => {
       expect(() =>
         router.register("users", HTTP_METHODS.GET, [() => {}]),

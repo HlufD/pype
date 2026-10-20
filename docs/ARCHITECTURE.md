@@ -387,8 +387,9 @@ flowchart TB
 
 #### Registration: `register()`, `insert()`, `insertStatic()`
 
-1. `validateUrl()` rejects paths that don't start with `/`, and `?` or `*`
-   anywhere but the end.
+1. `validateUrl()` rejects paths that don't start with `/`, `?` or `*`
+   anywhere but the end, and `:` anywhere but at the start of a segment
+   holding a single `:name` or `:name?` (`PARAM_SEGMENT`).
 2. `normalize()` applies the slash options.
 3. An optional last parameter is expanded: `/users/:id?` registers `/users`
    **and** `/users/:id` with the same handlers.
@@ -671,11 +672,11 @@ tests where it matters, for example cookie signatures against
 | ------ | ------- | ----- |
 | Skipping auth middleware with `//admin/secret` | Duplicate slashes are collapsed once, before both middleware and route matching | `Pype.prepare()` |
 | `?__proto__=...` changing objects | Query and form objects have no prototype | `parseQuery()` |
-| Header injection through cookies | Names, values, domain and path are validated | `serializeCookie()` |
+| Header injection through cookies | Names, values, domain and path are validated; `sameSite` and `priority` must be known values | `serializeCookie()` |
 | Path traversal in `sendFile` | `..` segments and paths outside `root` give 403, null bytes 400 | `resolveFilePath()` |
 | Hidden files leaking | Dotfiles ignored (404) by default | `resolveFilePath()` |
-| Symlinks leading out of `root` | Opt-in with `followSymlinks: false`: the real path must stay inside the real root, 403 otherwise. Followed by default, like Express | `checkRealPath()` |
-| Large or slow bodies | Size limit checked on `Content-Length` and while reading | `readBody()` |
+| Symlinks leading out of `root` | Opt-in with `followSymlinks: false`: the real path must stay inside the real root, 403 otherwise. Checked before opening, so not race-free against a writable root. Followed by default, like Express | `checkRealPath()` |
+| Large or slow bodies | Size limit checked on `Content-Length` and while reading; a `NaN` limit throws instead of disabling it | `readBody()` |
 | File descriptor exhaustion | Files closed when clients disconnect | `sendFile()` with `stream.pipeline` |
 | Spoofed client IPs | `X-Forwarded-*` only read from trusted proxies, off by default | `trust-proxy.ts` |
 | Leaking error details | Only 4xx messages are sent to clients | `finalHandler()` |

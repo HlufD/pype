@@ -141,7 +141,9 @@ Rules:
 
 - Paths must start with `/`. An optional parameter (`:name?`) and the
   wildcard (`*`) are only allowed at the end. A `:param` always takes a whole
-  segment.
+  segment, and its name is made of letters, digits, `_` and `$` and doesn't
+  start with a digit. Other forms, like `/:from-:to`, `/a-:id` or `/:`, throw
+  when the route is registered.
 - Matching is case-sensitive.
 - Duplicate slashes and a trailing slash are ignored: `//users//42/` matches
   `/users/:id`.
@@ -462,7 +464,9 @@ req.range(1000, { combine: true }); // merges overlapping and adjacent ranges
 ```
 
 Returns `undefined` without a `Range` header, `-1` when the range can't be
-satisfied and `-2` when the header is malformed.
+satisfied and `-2` when the header is malformed. Like Express, one malformed
+range (`bytes=0-1,x`) makes the whole header malformed, while ranges that
+can't be satisfied are skipped.
 
 ### Response
 
@@ -638,17 +642,18 @@ res.cookie("session", id, { signed: true, secure: true, sameSite: "lax" });
 | `expires`     | Expiry `Date`. |
 | `httpOnly`    | Hide the cookie from client-side JavaScript. |
 | `secure`      | Only send over HTTPS. |
-| `sameSite`    | `"strict"`, `"lax"`, `"none"`, or `true` for `Strict`. |
+| `sameSite`    | `"strict"`, `"lax"`, `"none"` (any case), or `true` for `Strict`. |
 | `domain`      | Domain the cookie is sent to. |
 | `path`        | Path the cookie is sent for. Defaults to `/`. |
 | `signed`      | Sign the value with the secret given to `cookie-parser`. |
-| `priority`    | `"low"`, `"medium"` or `"high"`. |
+| `priority`    | `"low"`, `"medium"` or `"high"` (any case). |
 | `partitioned` | Adds the `Partitioned` attribute. |
 | `encode`      | Function used to encode the value. Defaults to `encodeURIComponent`. |
 
 Throws a `TypeError` when the name, encoded value, `domain` or `path`
 contains characters that aren't allowed in a cookie (such as `;`), when
-`maxAge` isn't finite or `expires` is an invalid date, and an `Error` when
+`maxAge` isn't finite, `expires` is an invalid date, or `sameSite` or
+`priority` isn't one of the values above, and an `Error` when
 `signed` is used without `cookie-parser`'s secret.
 
 #### `res.clearCookie(name, [options])`
@@ -687,6 +692,9 @@ res.sendFile("/srv/reports/q3.pdf", (err) => {
   files from outside it. If users can create files under `root` (an uploads
   folder, for example), set `followSymlinks: false`: the real path, with
   symlinks resolved, must then stay inside the real `root`, otherwise 403.
+  The check runs just before the file is opened, so it can't stop someone
+  who swaps a file for a symlink in between. Don't serve from a folder that
+  untrusted users can write to without other safeguards.
 - Sets `Content-Type` from the extension, `Content-Length`, `Last-Modified`,
   a weak `ETag`, `Cache-Control` and `Accept-Ranges`.
 - Answers 304 for fresh conditional requests and 206 for a single byte range
@@ -748,7 +756,7 @@ Options:
 
 | Option   | Default   | Description |
 | -------- | --------- | ----------- |
-| `limit`  | `"100kb"` | Maximum body size, as bytes or a string with `b`, `kb`, `mb` or `gb`. |
+| `limit`  | `"100kb"` | Maximum body size, as bytes or a string with `b`, `kb`, `mb` or `gb`. An invalid string or `NaN` throws a `TypeError` when the parser is created. |
 | `type`   | see above | Content types to parse: a type, a list of types (same patterns as `req.is()`), or a function `(req) => boolean`. |
 | `strict` | `true`    | `json()` only: accept only objects and arrays. |
 
@@ -997,7 +1005,7 @@ Differences:
 - Duplicate and trailing slashes are always ignored.
 - The default 404 and error responses are JSON.
 - Not implemented: `app.param()`, regular expression routes, several
-  parameters in one segment (`/:from-:to`), parameters in `use()` mount
+  parameters in one segment (`/:from-:to`, which throws), parameters in `use()` mount
   paths, mounting another app with `app.use(otherApp)`, `app.engine()` and
   `res.render()`, `res.jsonp()`, `req.param()`, and the
   `"case sensitive routing"`, `"strict routing"`, `"query parser"`,

@@ -24,7 +24,7 @@ describe("request API", () => {
     app.get("/encodings", reflect((req) => req.acceptsEncodings("gzip", "identity")));
     app.get("/encodings-list", reflect((req) => req.acceptsEncodings()));
     app.get("/languages", reflect((req) => req.acceptsLanguages("fr")));
-    app.post("/is", reflect((req) => req.is()));
+    app.all("/is", reflect((req) => req.is()));
     app.post("/is-json", reflect((req) => req.is("+json")));
     app.get("/host", reflect((req) => ({ hostname: req.hostname, subdomains: req.subdomains })));
     app.get("/range", reflect((req) => ({ none: req.range(10) ?? "none", bad: "x" })));
@@ -85,8 +85,11 @@ describe("request API", () => {
         headers: { "Content-Type": "application/vnd.api+json", "Content-Length": "2" },
         body,
       }),
-    ).toBe("+json");
-    expect(await value("/is", { method: "POST" })).toBe(null);
+    ).toBe("application/vnd.api+json");
+    // Like type-is: no Content-Length or Transfer-Encoding means no body,
+    // while Content-Length: 0 (what Node's client sends for an empty POST) is one.
+    expect(await value("/is", { method: "DELETE" })).toBe(null);
+    expect(await value("/is", { method: "POST" })).toBe(false);
     expect(
       await value("/is", { method: "POST", headers: { "Transfer-Encoding": "chunked" }, body }),
     ).toBe(false);
@@ -332,9 +335,9 @@ describe("body parsers", () => {
   const post = (path: string, body: string, headers: Record<string, string> = {}) =>
     api.send(path, { method: "POST", body, headers: { "Content-Type": "application/json", ...headers } });
 
-  it("treats an empty JSON body as an empty object and skips missing bodies", async () => {
+  it("treats empty JSON bodies, chunked or with Content-Length: 0, as an empty object like body-parser", async () => {
     expect(JSON.parse((await post("/json", "", { "Transfer-Encoding": "chunked" })).text)).toEqual({ body: {} });
-    expect(JSON.parse((await post("/json", "")).text)).toEqual({});
+    expect(JSON.parse((await post("/json", "", { "Content-Length": "0" })).text)).toEqual({ body: {} });
   });
 
   it("rejects whitespace-only JSON bodies like body-parser", async () => {

@@ -11,6 +11,9 @@ import {
   encodeUrl,
   escapeHtml,
   generateETag,
+  lookupMime,
+  parseTokenList,
+  setCharset,
   serializeCookie,
   signCookie,
 } from "../utils/helpers";
@@ -47,8 +50,12 @@ export interface SendFileOptions {
 /** Called when a file transfer finishes or fails. */
 type SendFileCallback = (error?: Error) => void;
 
-/** Error carrying an HTTP status, used for file transfer failures. */
+/** Error carrying an HTTP status, like `http-errors`, used for file transfers and `res.format()`. */
 class HttpError extends Error {
+  statusCode: number;
+  expose: boolean;
+  [key: string]: unknown;
+
   /**
    * @param status - HTTP status code.
    * @param message - Defaults to the status code's standard message.
@@ -58,8 +65,13 @@ class HttpError extends Error {
     message = STATUS_CODES[status] || String(status),
   ) {
     super(message);
+    this.statusCode = status;
+    this.expose = status < 500;
   }
 }
+
+/** A `Vary` field name (RFC 7230 token). */
+const FIELD_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 /** Merges Express response augmentations into {@link Response}. */
 export interface Response extends Express.Response {}
@@ -112,7 +124,9 @@ export class Response extends ServerResponse<Request> {
     let chunk: string | Buffer | undefined;
 
     if (typeof body === "string") {
-      if (!this.get("Content-Type")) this.type("html");
+      const type = this.get("Content-Type");
+      if (typeof type === "string") this.setHeader("Content-Type", setCharset(type, "utf-8"));
+      else this.type("html");
       chunk = body;
     } else if (Buffer.isBuffer(body) || ArrayBuffer.isView(body)) {
       if (!this.get("Content-Type"))
@@ -213,18 +227,16 @@ export class Response extends ServerResponse<Request> {
   }
 
   /**
-   * Sets `Content-Type` from a MIME type or an extension such as `"json"`.
-   * Unknown extensions become `application/octet-stream`.
+   * Sets `Content-Type` from a MIME type or an extension such as `"json"`,
+   * adding a charset where Express does. Unknown extensions become
+   * `application/octet-stream`.
    */
   type(value: string) {
-    if (!value) return this;
+    if (typeof value !== "string") return this;
+    if (value.includes("/")) return this.set("Content-Type", value);
 
-    const type = value.includes("/")
-      ? value
-      : MIME_TYPES[value.replace(/^\./, "").toLowerCase()] ||
-        "application/octet-stream";
-
-    return this.set("Content-Type", type);
+    const mime = lookupMime(value);
+    return this.set("Content-Type", mime ? contentType(mime) : "application/octet-stream");
   }
 
   /**
@@ -261,7 +273,7 @@ export class Response extends ServerResponse<Request> {
       },
       html: () => {
         const escaped = escapeHtml(location);
-        body = `<!DOCTYPE html><head><title>${statusText}</title></head><body><p>${statusText}. Redirecting to <a href="${escaped}">${escaped}</a></p></body>`;
+        body = `<!DOCTYPE html><head><title>${statusText}</title></head><body><p>${statusText}. Redirecting to ${escaped}</p></body>`;
       },
       default: () => {
         body = "";
@@ -354,81 +366,71 @@ export class Response extends ServerResponse<Request> {
     return this.set(field, previous.concat(value));
   }
 
-  /** Adds fields to the `Vary` header without duplicates. */
-  vary(headers: string) {
-    if (!headers) return this;
-    const existing = this.get("Vary") as string;
+  /**
+   * Adds fields to the `Vary` header like the `vary` package: duplicates are
+   * compared case-insensitively, the first spelling is kept, and `*` replaces
+   * everything.
+   *
+   * @throws When a field isn't a valid header name.
+   */
+  vary(field: string | string[]) {
+    if (!field || (Array.isArray(field) && field.length === 0)) return this;
 
-    if (existing === "*") return this;
+    const fields = Array.isArray(field) ? field : parseTokenList(String(field));
+    for (const name of fields) {
+      if (!FIELD_NAME.test(name)) {
+        throw new TypeError("field argument contains an invalid header name");
+      }
+    }
 
-    if (headers.trim() === "*") {
-      this.set("Vary", "*");
+    const existing = this.getHeader("Vary");
+    let header = Array.isArray(existing) ? existing.join(", ") : String(existing ?? "");
+    if (header === "*") return this;
+
+    const seen = parseTokenList(header.toLowerCase());
+    if (fields.includes("*") || seen.includes("*")) {
+      this.setHeader("Vary", "*");
       return this;
     }
 
-    const uniqueHeaders = new Set<string>();
-
-    if (existing) {
-      existing
-        .split(",")
-        .map((header) => header.trim())
-        .filter(Boolean)
-        .forEach((header) => {
-          uniqueHeaders.add(header.toLowerCase());
-        });
+    for (const name of fields) {
+      const lower = name.toLowerCase();
+      if (seen.includes(lower)) continue;
+      seen.push(lower);
+      header = header ? `${header}, ${name}` : name;
     }
 
-    headers
-      .split(",")
-      .map((header) => header.trim())
-      .filter(Boolean)
-      .forEach((header) => {
-        uniqueHeaders.add(header.toLowerCase());
-      });
-
-    this.set("Vary", Array.from(uniqueHeaders).join(", "));
-
+    this.setHeader("Vary", header);
     return this;
   }
 
   /**
-   * Runs the handler matching the `Accept` header and sets `Content-Type`
-   * and `Vary: Accept`. Falls back to `default`, otherwise responds 406.
+   * Runs the handler matching the `Accept` header, like Express: sets
+   * `Vary: Accept` and the matched `Content-Type`, then calls the handler with
+   * `(req, res, next)`. Falls back to `default`, otherwise passes a 406 error
+   * with the offered `types` to `next()`.
    *
    * @param formats - Handlers keyed by MIME type or extension.
    */
-  format(formats: Record<string, () => any>) {
-    const defaultHandler = formats.default;
-    const normalized: Record<string, () => any> = {};
+  format(formats: Record<string, (req?: Request, res?: Response, next?: (err?: any) => void) => any>) {
+    const req = this.req;
+    const next = req.next;
+    const keys = Object.keys(formats).filter((key) => key !== "default");
+    const key = keys.length > 0 ? (req.accepts(keys) as string | false) : false;
 
-    for (const key in formats) {
-      if (key === "default") continue;
+    this.vary("Accept");
 
-      let mime = key;
-
-      if (!key.includes("/")) {
-        const ext = key.replace(/^\./, "");
-        mime = MIME_TYPES[ext] || key;
-      }
-
-      normalized[mime] = formats[key];
+    if (key) {
+      this.set("Content-Type", mimeOfFormat(key));
+      return formats[key](req, this, next);
     }
 
-    const types = Object.keys(normalized);
-    if (types.length > 0) this.vary("Accept");
+    if (formats.default) return formats.default(req, this, next);
 
-    const match = types.length > 0 ? this.req.accepts(...types) : false;
-
-    if (typeof match === "string") {
-      this.type(match);
-      return normalized[match]();
-    }
-
-    if (defaultHandler) {
-      return defaultHandler();
-    }
-
-    return this.status(406).send("Not Acceptable");
+    const error = new HttpError(406);
+    error.types = keys.map(mimeOfFormat);
+    if (next) return next(error);
+    return this.sendStatus(406);
   }
 
   /**
@@ -446,9 +448,11 @@ export class Response extends ServerResponse<Request> {
    * Without `root` the path must be absolute. With `root`, paths containing
    * `..` are rejected, and with `followSymlinks: false` so are symlinks that
    * lead outside it. Supports single byte ranges and conditional GETs.
-   * Without a callback, errors are answered with 404 for missing files and
-   * the matching status otherwise. The file stream is closed when the client
-   * disconnects, and the callback then receives the premature-close error.
+   * Without a callback, errors go to `next(err)` like Express, as an
+   * {@link HttpError} with the status (404 for missing files) and the file
+   * system `code`; a directory calls `next()` so later routes can answer.
+   * The file stream is closed when the client disconnects, and the callback
+   * then receives the premature-close error.
    *
    * @param path - File path.
    * @param options - Transfer options, or the callback.
@@ -478,15 +482,28 @@ export class Response extends ServerResponse<Request> {
       if (callback) return callback(error);
       if (!error) return;
 
-      const status =
-        error instanceof HttpError ? error.status : errorStatus(error);
-
-      if (!this.headersSent) {
-        this.removeHeader("Content-Disposition");
-        this.sendStatus(status);
-      } else if (!this.writableEnded) {
-        this.destroy(error);
+      // The client went away, there is nobody to answer.
+      if (ABORT_CODES.has(error.code as string)) {
+        if (!this.writableEnded) this.destroy();
+        return;
       }
+
+      const next = this.req.next;
+      if (error.code === "EISDIR" && next) return next();
+
+      // A fresh HttpError keeps file system paths out of the error message.
+      const httpError =
+        error instanceof HttpError ? error : new HttpError(errorStatus(error));
+      if (!(error instanceof HttpError)) {
+        httpError.code = error.code;
+        httpError.cause = error;
+      }
+
+      if (!this.headersSent) this.removeHeader("Content-Disposition");
+      if (next) return next(httpError);
+
+      if (!this.headersSent) this.sendStatus(httpError.status);
+      else if (!this.writableEnded) this.destroy(error);
     };
 
     const resolved = this.resolveFilePath(path, opts);
@@ -509,7 +526,9 @@ export class Response extends ServerResponse<Request> {
   ) {
     stat(resolved, (error, stats) => {
       if (error) return done(error);
-      if (stats.isDirectory()) return done(new HttpError(404));
+      if (stats.isDirectory()) {
+        return done(Object.assign(new HttpError(404, "EISDIR, read"), { code: "EISDIR" }));
+      }
 
       this.setFileHeaders(resolved, stats, opts);
 
@@ -585,7 +604,7 @@ export class Response extends ServerResponse<Request> {
         ...opts,
         headers: {
           ...opts.headers,
-          "Content-Disposition": contentDisposition(name || basename(path)),
+          "Content-Disposition": contentDisposition(basename(name || path)),
         },
       },
       callback,
@@ -661,6 +680,15 @@ export class Response extends ServerResponse<Request> {
 
     if (options.headers) this.set(options.headers);
   }
+}
+
+/** Error codes of a transfer the client aborted, ignored like Express does. */
+const ABORT_CODES = new Set(["ERR_STREAM_PREMATURE_CLOSE", "ECONNRESET", "ECONNABORTED", "EPIPE"]);
+
+/** The MIME type of a `res.format()` key, without parameters. */
+function mimeOfFormat(key: string): string {
+  if (key.includes("/")) return key.split(";")[0].trim();
+  return lookupMime(key) || "application/octet-stream";
 }
 
 /** HTTP status for a file system error: 404 for missing files, 500 otherwise. */

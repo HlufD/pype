@@ -224,8 +224,8 @@ describe("headers", () => {
     expect((await api.send("/set-missing-value")).status).toBe(500);
   });
 
-  it("type ignores empty values and falls back to octet-stream", async () => {
-    expect((await api.send("/type")).headers["content-type"]).toBe("application/octet-stream");
+  it("type falls back to octet-stream for empty and unknown values", async () => {
+    expect((await api.send("/type")).headers["content-type"]).toBe("application/octet-stream; charset=utf-8");
   });
 
   it("links appends to the Link header", async () => {
@@ -235,7 +235,7 @@ describe("headers", () => {
   });
 
   it("vary de-duplicates fields and respects *", async () => {
-    expect((await api.send("/vary")).headers.vary).toBe("accept, origin, cookie");
+    expect((await api.send("/vary")).headers.vary).toBe("Accept, Origin, Cookie");
     expect((await api.send("/vary-star")).headers.vary).toBe("*");
   });
 
@@ -292,7 +292,7 @@ describe("format", () => {
   it("picks the handler for the Accept header", async () => {
     const reply = await api.send("/format", { headers: { Accept: "text/plain" } });
     expect(reply.text).toBe("text");
-    expect(reply.headers.vary).toBe("accept");
+    expect(reply.headers.vary).toBe("Accept");
   });
 
   it("falls back to default, or 406 without one", async () => {
@@ -386,13 +386,13 @@ describe("sendFile", () => {
 describe("download", () => {
   it("uses the file name by default", async () => {
     const reply = await api.send("/download/default");
-    expect(reply.headers["content-disposition"]).toBe('attachment; filename="data.json"');
+    expect(reply.headers["content-disposition"]).toBe("attachment; filename=data.json");
   });
 
   it("accepts a name, options and a callback", async () => {
     sendFileResults.length = 0;
     const reply = await api.send("/download/options");
-    expect(reply.headers["content-disposition"]).toBe('attachment; filename="report.json"');
+    expect(reply.headers["content-disposition"]).toBe("attachment; filename=report.json");
     expect(reply.headers["x-extra"]).toBe("1");
 
     await api.send("/download/callback-only");

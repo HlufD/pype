@@ -1,6 +1,7 @@
 import { createHash, createHmac } from "crypto";
 import { IncomingHttpHeaders, OutgoingHttpHeaders } from "http";
 import { CookieOptions } from "../types/cookie-options";
+import { parse } from "querystring";
 import { MIME_TYPES } from "../enums/mime-types";
 
 /** RFC 6265 cookie name: an HTTP token. */
@@ -24,7 +25,8 @@ const SAME_SITE = new Map([["lax", "Lax"], ["strict", "Strict"], ["none", "None"
  * @param name - Cookie name.
  * @param value - Cookie value, encoded with `options.encode`.
  * @param options - Cookie attributes.
- * @throws TypeError when the name, encoded value, domain or path contains
+ * @throws TypeError with the `cookie` package's messages when the name,
+ * encoded value, domain or path contains
  * characters that would break or inject into the header, or `priority` or
  * `sameSite` isn't one of the allowed values.
  */
@@ -34,29 +36,29 @@ function serializeCookie(
   options: CookieOptions = {},
 ) {
   if (!COOKIE_NAME.test(name)) {
-    throw new TypeError(`Invalid cookie name: ${JSON.stringify(name)}`);
+    throw new TypeError("argument name is invalid");
   }
 
   const encode = options.encode || encodeURIComponent;
   const encoded = encode(value);
 
   if (!COOKIE_VALUE.test(encoded)) {
-    throw new TypeError(`Invalid cookie value for ${name}`);
+    throw new TypeError("argument val is invalid");
   }
 
   for (const attribute of ["domain", "path"] as const) {
     const attributeValue = options[attribute];
     if (attributeValue !== undefined && !COOKIE_ATTRIBUTE.test(attributeValue)) {
-      throw new TypeError(`Invalid cookie ${attribute}: ${JSON.stringify(attributeValue)}`);
+      throw new TypeError(`option ${attribute} is invalid`);
     }
   }
 
   if (options.maxAge != null && !Number.isFinite(options.maxAge)) {
-    throw new TypeError("Cookie maxAge must be a finite number");
+    throw new TypeError("option maxAge is invalid");
   }
 
   if (options.expires && Number.isNaN(options.expires.getTime())) {
-    throw new TypeError("Cookie expires must be a valid date");
+    throw new TypeError("option expires is invalid");
   }
 
   let cookie = `${name}=${encoded}`;
@@ -82,7 +84,7 @@ function serializeCookie(
 
   if (options.priority) {
     const priority = PRIORITIES.get(String(options.priority).toLowerCase());
-    if (!priority) throw new TypeError(`Invalid cookie priority: ${options.priority}`);
+    if (!priority) throw new TypeError("option priority is invalid");
     cookie += `; Priority=${priority}`;
   }
 
@@ -91,7 +93,7 @@ function serializeCookie(
       options.sameSite === true
         ? "Strict"
         : SAME_SITE.get(String(options.sameSite).toLowerCase());
-    if (!sameSite) throw new TypeError(`Invalid cookie sameSite: ${options.sameSite}`);
+    if (!sameSite) throw new TypeError("option sameSite is invalid");
     cookie += `; SameSite=${sameSite}`;
   }
 
@@ -113,134 +115,242 @@ function signCookie(value: string, secret: string): string {
   return `${value}.${signature}`;
 }
 
-/** One entry of a header like `Accept`, e.g. `text/html;q=0.8`. */
-interface Preference {
+/** A parsed header value like `text/html;level=1;q=0.8`. */
+interface HeaderValue {
+  /** The value with its original case, e.g. `text/html` or `en-US`. */
   value: string;
+  /** Parameters other than `q`, keys lower-cased. */
+  params: Record<string, string>;
   q: number;
+  /** Position in the header. */
   index: number;
 }
 
 /**
- * Parses headers like `Accept` or `Accept-Language` into lower-cased values
- * with their q-weights and original positions.
+ * Splits a `,`-separated header into values with their parameters, the same
+ * way `negotiator` does: quoted strings may contain `,` and `;`, the first
+ * occurrence of a parameter wins and a missing or empty `q` is 1.
  */
-function parsePreferences(header: string): Preference[] {
-  return header
-    .split(",")
-    .map((part, index) => {
-      const [value, ...params] = part.split(";").map((p) => p.trim());
-      let q = 1;
+function parseAcceptHeader(header: string): HeaderValue[] {
+  const values: HeaderValue[] = [];
+  const length = header.length;
+  let index = 0;
 
-      for (const param of params) {
-        if (param.startsWith("q=")) {
-          const parsed = parseFloat(param.slice(2));
-          q = Number.isNaN(parsed) ? 0 : parsed;
+  while (index < length) {
+    index = skipWhitespace(header, index);
+    const start = index;
+    while (index < length && header[index] !== ";" && header[index] !== ",") index++;
+    const value = header.slice(start, index).trimEnd();
+    const params: Record<string, string> = Object.create(null);
+
+    while (index < length && header[index] === ";") {
+      index = skipWhitespace(header, index + 1);
+      const keyStart = index;
+      while (index < length && !";,=".includes(header[index])) index++;
+      if (header[index] !== "=") continue;
+
+      const key = header.slice(keyStart, index).trimEnd().toLowerCase();
+      index = skipWhitespace(header, index + 1);
+      let paramValue = "";
+
+      if (header[index] === '"') {
+        index++;
+        while (index < length && header[index] !== '"') {
+          if (header[index] === "\\" && index + 1 < length) index++;
+          paramValue += header[index++];
         }
+        index++;
+        while (index < length && header[index] !== ";" && header[index] !== ",") index++;
+      } else {
+        const valueStart = index;
+        while (index < length && header[index] !== ";" && header[index] !== ",") index++;
+        paramValue = header.slice(valueStart, index).trimEnd();
       }
 
-      return { value: value.toLowerCase(), q, index };
-    })
-    .filter((pref) => pref.value !== "");
+      if (params[key] === undefined) params[key] = paramValue;
+    }
+
+    const q = params.q;
+    delete params.q;
+    values.push({ value, params, q: q ? parseFloat(q) : 1, index: values.length });
+    index++;
+  }
+
+  return values;
+}
+
+/** Skips spaces and tabs. */
+function skipWhitespace(header: string, index: number) {
+  while (header[index] === " " || header[index] === "\t") index++;
+  return index;
 }
 
 /**
- * Returns how specifically a client `pattern` matches a server `offer`
- * (higher is more specific), or -1 for no match.
+ * How well a client preference matches an offer: `s` is a specificity
+ * bitmask, higher wins. `null` means no match.
  */
-type Matcher = (pattern: string, offer: string) => number;
-
-/**
- * Ranks `offers` by the client's preferences.
- *
- * Each offer takes the q-value of the most specific matching preference, so
- * `text/html;q=0` rejects `text/html` even when
- * the header also accepts every type. Offers with q=0 are dropped.
- *
- * @param header - The raw `Accept*` header.
- * @param offers - Values the server can produce.
- * @param match - Compares a preference with an offer.
- * @param defaultQ - q-value for offers no preference mentions, they are
- * dropped when it returns `undefined`.
- * @returns Acceptable offers, most preferred first.
- */
-function negotiate(
-  header: string,
-  offers: string[],
-  match: Matcher,
-  defaultQ?: (offer: string) => number | undefined,
-): string[] {
-  const preferences = parsePreferences(header);
-
-  return offers
-    .map((offer, order) => {
-      let best: { q: number; specificity: number; index: number } | null =
-        null;
-
-      for (const pref of preferences) {
-        const specificity = match(pref.value, offer.toLowerCase());
-        if (specificity < 0) continue;
-
-        if (
-          !best ||
-          specificity > best.specificity ||
-          (specificity === best.specificity && pref.q > best.q)
-        ) {
-          best = { q: pref.q, specificity, index: pref.index };
-        }
-      }
-
-      if (!best) {
-        const q = defaultQ?.(offer.toLowerCase());
-        if (q === undefined) return null;
-        best = { q, specificity: -1, index: preferences.length };
-      }
-
-      return { offer, order, ...best };
-    })
-    .filter(
-      (ranked): ranked is NonNullable<typeof ranked> =>
-        ranked !== null && ranked.q > 0,
-    )
-    .sort((a, b) => b.q - a.q || a.index - b.index || a.order - b.order)
-    .map((ranked) => ranked.offer);
+interface Priority {
+  /** Index of the offer. */
+  i: number;
+  /** Index of the matching preference in the header. */
+  o: number;
+  q: number;
+  s: number;
 }
 
-/** Values the client accepts (q > 0), most preferred first. */
-function acceptedValues(header: string): string[] {
-  return parsePreferences(header)
-    .filter((pref) => pref.q > 0)
+/** Compares a preference against an offer, the matchers of `negotiator`. */
+type Specify = (offer: string, preference: HeaderValue, index: number) => Priority | null;
+
+/** Media types: type (4), subtype (2) and parameters (1). */
+const specifyMediaType: Specify = (offer, preference, index) => {
+  const parsed = parseAcceptHeader(offer)[0];
+  const slash = parsed?.value.indexOf("/") ?? -1;
+  if (!parsed || slash === -1) return null;
+
+  const [type, subtype] = splitMediaType(preference.value);
+  const offerType = parsed.value.slice(0, slash).toLowerCase();
+  const offerSubtype = parsed.value.slice(slash + 1).toLowerCase();
+  let s = 0;
+
+  if (type.toLowerCase() === offerType) s |= 4;
+  else if (type !== "*") return null;
+
+  if (subtype.toLowerCase() === offerSubtype) s |= 2;
+  else if (subtype !== "*") return null;
+
+  const keys = Object.keys(preference.params);
+  if (keys.length > 0) {
+    const matches = keys.every(
+      (key) =>
+        preference.params[key] === "*" ||
+        (preference.params[key] || "").toLowerCase() === (parsed.params[key] || "").toLowerCase(),
+    );
+    if (!matches) return null;
+    s |= 1;
+  }
+
+  return { i: index, o: preference.index, q: preference.q, s };
+};
+
+/** Charsets and encodings: exact (1) or `*`. */
+const specifyToken: Specify = (offer, preference, index) => {
+  let s = 0;
+  if (preference.value.toLowerCase() === offer.toLowerCase()) s |= 1;
+  else if (preference.value !== "*") return null;
+  return { i: index, o: preference.index, q: preference.q, s };
+};
+
+/** Languages: exact (4), `en` offer for `en-US` (2), `en-US` offer for `en` (1), or `*`. */
+const specifyLanguage: Specify = (offer, preference, index) => {
+  const full = offer.toLowerCase();
+  const prefix = full.split("-")[0];
+  const accepted = preference.value.toLowerCase();
+  let s = 0;
+
+  if (accepted === full) s |= 4;
+  else if (accepted.split("-")[0] === full) s |= 2;
+  else if (accepted === prefix) s |= 1;
+  else if (accepted !== "*") return null;
+
+  return { i: index, o: preference.index, q: preference.q, s };
+};
+
+/** Splits `type/subtype`, `null` parts become empty strings. */
+function splitMediaType(value: string): [string, string] {
+  const slash = value.indexOf("/");
+  return slash === -1 ? [value, ""] : [value.slice(0, slash), value.slice(slash + 1)];
+}
+
+/** Order of `negotiator`: quality, specificity, header position, offer position. */
+function compareSpecs(a: { q: number; s?: number; o?: number; i: number }, b: typeof a) {
+  return b.q - a.q || (b.s ?? 0) - (a.s ?? 0) || (a.o ?? 0) - (b.o ?? 0) || a.i - b.i || 0;
+}
+
+/**
+ * Ranks `offers` by the client's `preferences` like `negotiator`: each offer
+ * takes the most specific matching preference, offers with q=0 (or no
+ * match) are dropped.
+ *
+ * @returns The acceptable offers, most preferred first.
+ */
+function rankOffers(preferences: HeaderValue[], offers: string[], specify: Specify): string[] {
+  const priorities = offers.map((offer, index) => {
+    let best: Priority = { i: index, o: -1, q: 0, s: 0 };
+    for (const preference of preferences) {
+      const spec = specify(offer, preference, index);
+      if (spec && (best.s - spec.s || best.q - spec.q || best.o - spec.o) < 0) best = spec;
+    }
+    return best;
+  });
+
+  return priorities
+    .filter((priority) => priority.q > 0)
+    .sort(compareSpecs)
+    .map((priority) => offers[priority.i]);
+}
+
+/** Accepted values of a header (q > 0) with their original case, most preferred first. */
+function listAccepted(preferences: HeaderValue[]): string[] {
+  return preferences
+    .filter((preference) => preference.q > 0)
     .sort((a, b) => b.q - a.q || a.index - b.index)
-    .map((pref) => pref.value);
-}
-
-/** {@link Matcher} for media types: exact > `type/*` > any type. */
-function matchMediaType(pattern: string, offer: string): number {
-  const [patternType, patternSub] = pattern.split("/");
-  const [offerType, offerSub] = offer.split(";")[0].trim().split("/");
-
-  if (patternType === "*" && patternSub === "*") return 0;
-  if (patternType !== offerType) return -1;
-  if (patternSub === "*") return 1;
-  return patternSub === offerSub ? 2 : -1;
-}
-
-/** {@link Matcher} for charsets and encodings: exact > `*`. */
-function matchToken(pattern: string, offer: string): number {
-  if (pattern === "*") return 0;
-  return pattern === offer ? 1 : -1;
+    .map((preference) => preference.value);
 }
 
 /**
- * {@link Matcher} for languages: `en` matches `en-US` and vice versa, an
- * exact match ranks higher.
+ * Media types the `Accept` header allows, like `negotiator`. A missing
+ * header accepts everything.
+ *
+ * @param offers - MIME types, or omit to list the accepted types.
  */
-function matchLanguage(pattern: string, offer: string): number {
-  if (pattern === "*") return 0;
-  if (pattern === offer) return 2;
+function preferredMediaTypes(accept: string | undefined, offers?: string[]): string[] {
+  const preferences = parseAcceptHeader(accept === undefined ? "*/*" : accept).filter((p) =>
+    p.value.includes("/"),
+  );
+  if (!offers) return listAccepted(preferences);
+  return rankOffers(preferences, offers, specifyMediaType);
+}
 
-  const patternPrimary = pattern.split("-")[0];
-  const offerPrimary = offer.split("-")[0];
-  return patternPrimary === offerPrimary ? 1 : -1;
+/** Charsets the `Accept-Charset` header allows. A missing header accepts all. */
+function preferredCharsets(accept: string | undefined, offers?: string[]): string[] {
+  const preferences = parseAcceptHeader(accept === undefined ? "*" : accept).filter((p) => p.value);
+  if (!offers) return listAccepted(preferences);
+  return rankOffers(preferences, offers, specifyToken);
+}
+
+/**
+ * Encodings the `Accept-Encoding` header allows. `identity` is acceptable
+ * unless the header refuses it (directly or through `*`), and a missing
+ * header only allows `identity`.
+ */
+function preferredEncodings(accept: string | undefined, offers?: string[]): string[] {
+  const parsed = parseAcceptHeader(accept || "");
+  const preferences = parsed.filter((p) => p.value);
+  const coversIdentity = preferences.some((p) => specifyToken("identity", p, 0));
+
+  if (!coversIdentity) {
+    const minQuality = Math.min(1, ...preferences.map((p) => p.q || 1));
+    preferences.push({ value: "identity", params: Object.create(null), q: minQuality, index: parsed.length });
+  }
+
+  if (!offers) return listAccepted(preferences);
+  return rankOffers(preferences, offers, specifyToken);
+}
+
+/** Languages the `Accept-Language` header allows. A missing header accepts all. */
+function preferredLanguages(accept: string | undefined, offers?: string[]): string[] {
+  const preferences = parseAcceptHeader(accept === undefined ? "*" : accept).filter((p) => p.value);
+  if (!offers) return listAccepted(preferences);
+  return rankOffers(preferences, offers, specifyLanguage);
+}
+
+/**
+ * MIME type for an extension or file name, like `mime-types`' `lookup`:
+ * `json`, `.json` and `data.json` give `application/json`. `false` when unknown.
+ */
+function lookupMime(value: string): string | false {
+  const extension = value.slice(value.lastIndexOf(".") + 1).toLowerCase();
+  return MIME_TYPES[extension] || false;
 }
 
 /** Expands extensions to MIME types: `json` becomes `application/json`. */
@@ -271,30 +381,84 @@ function contentType(type: string): string {
   return mime;
 }
 
+/** A valid `type/subtype`, the rule `media-typer` uses. */
+const MEDIA_TYPE = /^[a-z0-9][a-z0-9!#$&^_-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/;
+
 /**
- * Matches a request `Content-Type` against a `type-is` style pattern such as
- * `json`, `application/json`, `text/*` or `+json`.
+ * The media type of a `Content-Type` header, lower-cased and without
+ * parameters, or `null` when it is missing or invalid.
+ */
+function mediaTypeOf(header: string | undefined): string | null {
+  if (!header) return null;
+  const semicolon = header.indexOf(";");
+  const type = (semicolon === -1 ? header : header.slice(0, semicolon)).trim().toLowerCase();
+  return MEDIA_TYPE.test(type) ? type : null;
+}
+
+/**
+ * Matches a media type against a `type-is` pattern such as `json`,
+ * `application/json`, `text/*`, `+json`, `urlencoded` or `multipart`.
  *
- * @param actual - The request's media type, without parameters.
+ * @param actual - A media type from {@link mediaTypeOf}.
  * @param pattern - The pattern to test.
  */
 function matchContentType(actual: string, pattern: string): boolean {
-  let expected = pattern.toLowerCase();
-  if (expected.startsWith("+")) expected = `*/*${expected}`;
-  else expected = normalizeType(expected).toLowerCase();
+  let expected: string | false;
+  if (pattern === "urlencoded") expected = "application/x-www-form-urlencoded";
+  else if (pattern === "multipart") expected = "multipart/*";
+  else if (pattern.startsWith("+")) expected = `*/*${pattern}`;
+  else expected = pattern.includes("/") ? pattern : lookupMime(pattern);
+  if (!expected) return false;
 
-  const [actualType, actualSub] = actual.toLowerCase().split("/");
-  const [expectedType, expectedSub] = expected.split("/");
+  const [actualType, actualSub, ...actualRest] = actual.split("/");
+  const [expectedType, expectedSub, ...expectedRest] = expected.split("/");
 
-  if (!actualSub || !expectedSub) return false;
+  if (actualSub === undefined || expectedSub === undefined) return false;
+  if (actualRest.length > 0 || expectedRest.length > 0) return false;
   if (expectedType !== "*" && expectedType !== actualType) return false;
 
   if (expectedSub.startsWith("*+")) {
-    return actualSub.endsWith(expectedSub.slice(1));
+    return expectedSub.length <= actualSub.length + 1 && actualSub.endsWith(expectedSub.slice(1));
   }
 
   return expectedSub === "*" || expectedSub === actualSub;
 }
+
+/**
+ * Sets the `charset` parameter of a `Content-Type`, like Express's
+ * `setCharset`: the type is lower-cased and parameters are sorted.
+ */
+function setCharset(type: string, charset: string): string {
+  // Fast path for the common case, e.g. what res.json() and res.type() set.
+  if (type.endsWith(`; charset=${charset}`) && SIMPLE_TYPE.test(type.slice(0, -charset.length - 10))) return type;
+
+  const [base, ...rest] = type.split(";");
+  const params: Record<string, string> = Object.create(null);
+
+  for (const param of rest) {
+    const eq = param.indexOf("=");
+    if (eq === -1) continue;
+    const key = param.slice(0, eq).trim().toLowerCase();
+    let value = param.slice(eq + 1).trim();
+    if (value.startsWith('"') && value.endsWith('"')) value = value.slice(1, -1).replace(/\\(.)/g, "$1");
+    params[key] = value;
+  }
+
+  params.charset = charset;
+
+  let result = base.trim().toLowerCase();
+  for (const key of Object.keys(params).sort()) {
+    const value = params[key];
+    result += `; ${key}=${TOKEN.test(value) ? value : `"${value.replace(/["\\]/g, "\\$&")}"`}`;
+  }
+  return result;
+}
+
+/** A lower-case media type without parameters. */
+const SIMPLE_TYPE = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/;
+
+/** An HTTP token (RFC 7230). */
+const TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
 /** An inclusive byte range. */
 interface Range {
@@ -378,7 +542,10 @@ function combineRanges(ranges: Ranges): Ranges {
 }
 
 /**
- * Conditional GET check with the same rules as the `fresh` package.
+ * Conditional GET check with the rules of the `fresh` package: when
+ * `If-None-Match` is present it alone decides, `*` matches any response,
+ * otherwise `If-Modified-Since` must be a date no older than
+ * `Last-Modified`. `Cache-Control: no-cache` always forces a full response.
  *
  * @returns `true` when the client's cached copy is still valid, so the
  * response can be a 304.
@@ -396,28 +563,25 @@ function isFresh(
   if (cacheControl && /(?:^|,)\s*no-cache\s*(?:,|$)/.test(cacheControl))
     return false;
 
-  if (noneMatch && noneMatch !== "*") {
+  if (noneMatch) {
+    if (noneMatch === "*") return true;
+
     const etag = resHeaders["etag"] as string | undefined;
     if (!etag) return false;
 
-    const matches = noneMatch
-      .split(",")
-      .map((tag) => tag.trim())
-      .some(
-        (tag) =>
-          tag === etag || tag === `W/${etag}` || `W/${tag}` === etag,
-      );
-
-    if (!matches) return false;
+    return parseTokenList(noneMatch).some(
+      (tag) => tag === etag || tag === `W/${etag}` || `W/${tag}` === etag,
+    );
   }
 
-  if (modifiedSince) {
-    const lastModified = resHeaders["last-modified"] as string | undefined;
-    if (!lastModified) return false;
-    if (Date.parse(lastModified) > Date.parse(modifiedSince)) return false;
-  }
+  const lastModified = resHeaders["last-modified"] as string | undefined;
+  if (!lastModified) return false;
+  return Date.parse(lastModified) <= Date.parse(modifiedSince!);
+}
 
-  return true;
+/** Splits a `,`-separated header like `fresh` and `vary` do, trimming spaces. */
+function parseTokenList(header: string): string[] {
+  return header.split(",").map((token) => token.trim());
 }
 
 /**
@@ -456,32 +620,42 @@ function escapeHtml(value: string): string {
 }
 
 /**
- * `Content-Disposition: attachment` value, with an RFC 5987 `filename*` for
- * non-ASCII file names.
+ * `Content-Disposition: attachment` value, like the `content-disposition`
+ * package: tokens are written as-is, other ASCII names quoted, and names with
+ * non-ASCII characters or `%XX` sequences get an ASCII fallback plus an
+ * RFC 5987 `filename*`.
  */
 function contentDisposition(filename?: string): string {
-  if (!filename) return "attachment";
+  if (filename === undefined) return "attachment";
 
-  const ascii = filename
-    .replace(/[^\x20-\x7e]/g, "?")
-    .replace(/["\\]/g, "\\$&");
-  let header = `attachment; filename="${ascii}"`;
-
-  if (/[^\x20-\x7e]/.test(filename)) {
-    header += `; filename*=UTF-8''${encodeURIComponent(filename)}`;
+  if (/^[\x20-\x7e]*$/.test(filename) && !/%[0-9A-Fa-f]{2}/.test(filename)) {
+    return `attachment; filename=${quoteParameter(filename)}`;
   }
 
-  return header;
+  const fallback = filename.replace(/[^\x20-\x7e]/g, "?");
+  const extended = encodeURIComponent(filename).replace(
+    /[\x00-\x20"'()*,/:;<=>?@[\\\]{}\x7f]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return `attachment; filename=${quoteParameter(fallback)}; filename*=UTF-8''${extended}`;
+}
+
+/** A header parameter value: a token as-is, otherwise a quoted string. */
+function quoteParameter(value: string): string {
+  return TOKEN.test(value) ? value : `"${value.replace(/[\\"]/g, "\\$&")}"`;
 }
 
 export {
   serializeCookie,
   signCookie,
-  negotiate,
-  acceptedValues,
-  matchMediaType,
-  matchToken,
-  matchLanguage,
+  preferredMediaTypes,
+  preferredCharsets,
+  preferredEncodings,
+  preferredLanguages,
+  lookupMime,
+  mediaTypeOf,
+  setCharset,
+  parseTokenList,
   normalizeType,
   contentType,
   matchContentType,
@@ -495,24 +669,17 @@ export {
 };
 
 /**
- * Parses a query string. Repeated keys become arrays.
+ * Parses a query string with Node's `querystring.parse`, which is Express 5's
+ * default "simple" query parser: repeated keys become arrays, at most 1000
+ * keys are read, and malformed escapes are kept as they are.
  *
- * The result has no prototype, like Node's `querystring.parse`, so keys such
- * as `__proto__` or `toString` are plain data and can't change the object.
+ * The result has no prototype, so keys such as `__proto__` or `toString`
+ * are plain data and can't change the object.
  *
- * @param search - The query string without the leading `?`.
+ * @param search - Everything after the first `?`.
  */
 function parseQuery(search: string): Record<string, string | string[]> {
-  const query: Record<string, string | string[]> = Object.create(null);
-
-  for (const [key, value] of new URLSearchParams(search)) {
-    const existing = query[key];
-    if (existing === undefined) query[key] = value;
-    else if (Array.isArray(existing)) existing.push(value);
-    else query[key] = [existing, value];
-  }
-
-  return query;
+  return parse(search) as Record<string, string | string[]>;
 }
 
 export { parseQuery };

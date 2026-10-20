@@ -13,6 +13,10 @@ a radix tree router and no runtime dependencies.
   benchmark, and 85–90% of a bare Node.js `http` server.
 - **Typed**: written in TypeScript, ships its own declarations, and picks up
   type augmentations written for Express (for example passport's `req.user`).
+- **Checked against Express**: a differential test suite sends the same
+  requests, including fuzzed headers and bodies, to Express 5 and to Pype and
+  compares status, headers and body. The [known differences](#migrating-from-express)
+  are listed below.
 
 ## Contents
 
@@ -311,6 +315,12 @@ app.all("/health", (req, res) => res.sendStatus(200));
 With a single argument, `app.get(name)` reads a setting instead:
 `app.get("env")`.
 
+An `OPTIONS` request that no handler answers gets an automatic response, like
+in Express: 200 with an `Allow` header (and body) listing the methods of the
+routes for that path, `HEAD` included when there is a `GET` route. Routes
+that handle `OPTIONS` themselves, including `all()` routes, aren't listed;
+without any other route the request gets the usual 404.
+
 #### `app.route(path)`
 
 Returns a chainable builder for one path:
@@ -378,7 +388,7 @@ automatically.
 | Property        | Type                                  | Description |
 | --------------- | ------------------------------------- | ----------- |
 | `params`        | `Record<string, string>`              | Route parameters, URL-decoded. `"*"` holds the wildcard match. |
-| `query`         | `Record<string, string \| string[]>`  | Parsed query string. Repeated keys become arrays. The object has no prototype, so use `Object.hasOwn(req.query, key)` rather than `req.query.hasOwnProperty(key)`. |
+| `query`         | `Record<string, string \| string[]>`  | Parsed with Node's `querystring.parse`, Express 5's default: repeated keys become arrays, at most 1000 keys are read and `a[b]=c` stays a literal key. The object has no prototype, so use `Object.hasOwn(req.query, key)` rather than `req.query.hasOwnProperty(key)`. |
 | `body`          | `any`                                 | Parsed body, set by a [body parser](#body-parsers). `undefined` otherwise. |
 | `path`          | `string`                              | Path without the query string, relative to the current mount path. |
 | `originalUrl`   | `string`                              | The full original URL, including the query string. |
@@ -413,9 +423,12 @@ req.get("Content-Type"); // "application/json"
 
 #### `req.accepts(...types)`
 
-Picks the best type for the `Accept` header, honouring q-values. Types can be
-extensions (`"json"`) or MIME types (`"text/html"`), and are returned as you
-passed them.
+Picks the best type for the `Accept` header with the rules of Express's
+`negotiator`: q-values first, then the most specific match (`text/html`
+beats `text/*` beats `*/*`, and media type parameters like `level=1` must
+match), then the client's order. Types can be extensions (`"json"`) or MIME
+types (`"text/html"`), and are returned as you passed them; unknown
+extensions never match.
 
 ```ts
 // Accept: text/html, application/json;q=0.5
@@ -425,13 +438,20 @@ req.accepts("png");              // false
 req.accepts();                   // ["text/html", "application/json"]
 ```
 
-Without an `Accept` header, the first type is returned.
+Without an `Accept` header, the first type is returned. Without arguments,
+the accepted types are listed as the client wrote them, most preferred
+first.
 
 #### `req.acceptsCharsets(...)`, `req.acceptsEncodings(...)`, `req.acceptsLanguages(...)`
 
 Same as `accepts()` for `Accept-Charset`, `Accept-Encoding` and
-`Accept-Language`. `"identity"` encoding is acceptable unless the client
-refuses it. A language like `"en"` matches `"en-US"` and the other way round.
+`Accept-Language`.
+
+- `"identity"` encoding is acceptable unless the client refuses it, with
+  `identity;q=0` or `*;q=0`. Without an `Accept-Encoding` header it is the only
+  acceptable encoding, so `req.acceptsEncodings("gzip")` is `false`.
+- An `"en"` preference matches an `"en-US"` offer and the other way round, but
+  `"en-GB"` doesn't match `"en-US"`.
 
 ```ts
 // Accept-Language: en, fr;q=0.5
@@ -440,18 +460,25 @@ req.acceptsLanguages("fr", "en-US"); // "en-US"
 
 #### `req.is(...types)`
 
-Checks the request's `Content-Type`. Returns the first matching type as you
-passed it, `false` when none matches, or `null` when the request has no body.
+Checks the request's `Content-Type`, like Express's `type-is`. Returns the
+first matching type as you passed it, or the request's actual type for
+patterns with `*` or a leading `+`. Returns `false` when none matches or the
+`Content-Type` is missing or invalid, and `null` when the request has no body
+(neither `Content-Length` nor `Transfer-Encoding`; `Content-Length: 0` counts
+as a body).
 
 ```ts
 // Content-Type: application/json; charset=utf-8
 req.is("json");                 // "json"
 req.is("text/*", "json");       // "json"
-req.is("application/*");        // "application/*"
+req.is("application/*");        // "application/json"
 req.is("+json");                // false: only types ending in +json, e.g. application/vnd.api+json
 req.is("html");                 // false
 req.is();                       // "application/json"
 ```
+
+`"urlencoded"` and `"multipart"` are shorthands for
+`application/x-www-form-urlencoded` and `multipart/*`.
 
 #### `req.range(size, [options])`
 
@@ -498,7 +525,7 @@ Sends the response.
 
 | `body`                              | Sent as                                                       |
 | ----------------------------------- | ------------------------------------------------------------- |
-| `string`                            | `text/html` unless `Content-Type` is already set              |
+| `string`                            | `text/html`, or the `Content-Type` already set, with `charset=utf-8` |
 | `Buffer`, typed array               | `application/octet-stream` unless `Content-Type` is set       |
 | object, array, number, boolean      | JSON, same as `res.json()`                                    |
 | `null`, `undefined`                 | Empty body                                                    |
@@ -507,7 +534,8 @@ It also:
 
 - sets `Content-Length`;
 - adds a weak `ETag` unless the `etag` setting is `false` or an `ETag` is
-  already set;
+  already set. Hashing the body takes about 0.4 ms per MB (`npm run
+  bench:etag`), so consider turning the setting off for very large bodies;
 - answers `304 Not Modified` when the client's cached copy is fresh;
 - sends no body for `HEAD` requests and for 204, 205 and 304 responses.
 
@@ -581,10 +609,14 @@ res.type("image/png");
 
 #### `res.vary(field)`
 
-Adds a field to the `Vary` header without duplicates.
+Adds fields to the `Vary` header without duplicates, like Express: fields are
+compared case-insensitively, the first spelling is kept, and `*` replaces
+everything. Takes a comma-separated string or an array, and throws a
+`TypeError` for an invalid header name.
 
 ```ts
-res.vary("Accept").vary("Origin, Accept"); // Vary: accept, origin
+res.vary("Accept").vary("origin, accept"); // Vary: Accept, origin
+res.vary(["Accept", "Cookie"]);
 ```
 
 #### `res.location(url)`, `res.redirect([status], url)`
@@ -599,8 +631,9 @@ res.redirect(301, "https://example.com/new-home");
 res.status(201).location(`/users/${id}`).json(user);
 ```
 
-The redirect body is plain text or HTML depending on the `Accept` header, and
-is omitted for `HEAD` requests. `redirect` throws if no URL is given.
+The redirect body is plain text (`Found. Redirecting to /login`) or the same
+sentence as HTML depending on the `Accept` header, and is omitted for `HEAD`
+requests. `redirect` throws if no URL is given.
 
 #### `res.links(links)`
 
@@ -613,9 +646,11 @@ res.links({ next: "/users?page=3", prev: "/users?page=1" });
 
 #### `res.format(handlers)`
 
-Runs the handler that best matches the `Accept` header, sets `Content-Type`
-and adds `Vary: Accept`. Keys can be extensions or MIME types. Without a
-match, `default` runs, or the response is `406 Not Acceptable`.
+Runs the handler that best matches the `Accept` header with
+`(req, res, next)`, sets `Content-Type` and adds `Vary: Accept`. Keys can be
+extensions or MIME types. Without a match, `default` runs; without `default`,
+a 406 error whose `types` lists the offered MIME types is passed to
+`next(err)`, like Express.
 
 ```ts
 res.format({
@@ -663,8 +698,10 @@ Expires a cookie. Pass the same `path` and `domain` it was set with.
 #### `res.attachment([filename])`
 
 Marks the response as a download (`Content-Disposition: attachment`). With a
-file name, also sets `Content-Type` from its extension. Non-ASCII names are
-encoded as RFC 5987 requires.
+file name, also sets `Content-Type` from its extension. The header is built
+like the `content-disposition` package: plain names stay as they are
+(`filename=report.pdf`), others are quoted, and names with non-ASCII
+characters get an ASCII fallback plus an RFC 5987 `filename*`.
 
 ```ts
 res.attachment("report.pdf").send(pdfBuffer);
@@ -700,11 +737,15 @@ res.sendFile("/srv/reports/q3.pdf", (err) => {
 - Answers 304 for fresh conditional requests and 206 for a single byte range
   (416 when the range can't be satisfied). Requests for several ranges get the
   whole file.
-- Missing files and directories get 404 and other errors 500, unless you pass
-  a callback. The callback receives an error, or nothing on success, and you
-  must then respond yourself if the error happened before anything was sent.
-- The file is closed if the client disconnects, and the callback receives the
-  error.
+- Without a callback, errors go to `next(err)` like in Express, so your error
+  middleware sees them: an error with `status` (404 for missing files, 403,
+  416, ...) and the file system `code`, such as `"ENOENT"`. Its message is the
+  standard status text, never a file path. A directory calls `next()`, so
+  later routes can answer.
+- With a callback, it receives the error, or nothing on success, and you must
+  then respond yourself if the error happened before anything was sent.
+- The file is closed if the client disconnects. That is not treated as an
+  error without a callback; a callback receives the error.
 
 | Option         | Default    | Description |
 | -------------- | ---------- | ----------- |
@@ -766,18 +807,30 @@ Behaviour:
   already parsed by another parser (including the `body-parser` package) are
   passed on unchanged.
 - An empty JSON body becomes `{}`. A whitespace-only body is a 400
-  `entity.parse.failed`, like `body-parser`.
+  `entity.parse.failed`, like `body-parser`, and error messages use its
+  wording.
+- Charsets, from the `Content-Type` `charset` parameter (UTF-8 by default):
+  `json()` accepts UTF-8, UTF-16 and UTF-32; `urlencoded()` accepts UTF-8 and
+  ISO-8859-1; `text()` accepts any charset Node can decode. Others are a 415.
+  A byte order mark is dropped.
+- `urlencoded()` follows `body-parser` with `extended: false`: `+` is a space,
+  repeated keys become arrays, a key wrapped in brackets loses them (`[a]` is
+  `a`), `[]` keys become `0`, `1`, ..., empty and `__proto__` keys are
+  dropped, and more than 1000 parameters is a 413.
 - Errors are passed to `next(err)` with `status`, `statusCode`, `expose: true`
   and `type`, like the `body-parser` package:
 
 | Status | `type`                 | When |
 | ------ | ---------------------- | ---- |
 | 400    | `entity.parse.failed`  | Invalid JSON (including a whitespace-only body), or a primitive in strict mode |
+| 400    | `request.aborted`      | The client disconnected before sending the whole body |
 | 413    | `entity.too.large`     | The body is larger than `limit` |
+| 413    | `parameters.too.many`  | A form has more than 1000 parameters |
+| 415    | `charset.unsupported`  | The charset isn't accepted by the parser (see above) |
 | 415    | `encoding.unsupported` | The body is compressed (`Content-Encoding` isn't `identity`) |
 
-Not supported: compressed bodies, charsets other than UTF-8, and nested keys
-like `a[b]=c` in `urlencoded()`.
+Not supported: compressed bodies, and nested keys like `a[b]=c` in
+`urlencoded()` (the `extended` option is ignored; such keys stay literal).
 
 ### Settings
 
@@ -997,6 +1050,23 @@ app.use(json());
 | `http.createServer(app)`               | `http.createServer(app.handler)` |
 | `request(app)` in supertest            | `request(app.handler)` |
 
+Compatibility at a glance:
+
+| Express feature | Pype |
+| --- | --- |
+| Middleware, error middleware, async errors | Same |
+| `next()`, `next(err)`, `next("route")`, `next("router")` | Same; a second `next()` call is ignored |
+| Routers, mount paths, `req.baseUrl` / `path` / `originalUrl` | Same |
+| Request API (`accepts*`, `is`, `range`, `fresh`, `ip`, `ips`, `protocol`, `hostname`, `subdomains`, ...) | Same, checked by the differential tests |
+| Response API (`send`, `json`, `status`, `set`, `type`, `vary`, `format`, `redirect`, `cookie`, `attachment`, `sendFile`, `download`, ...) | Same, checked by the differential tests |
+| Automatic `OPTIONS` and `HEAD` | Same, see below for `OPTIONS` in routers |
+| `"trust proxy"` | Same values and results |
+| Body parsers | Same results, except compressed bodies and `extended: true` |
+| Route matching | Most specific route wins, not the first registered |
+| Duplicate and trailing slashes | Always ignored |
+| Default 404 and error responses | JSON instead of HTML |
+| `app.param()`, regex routes, `res.render()`, `res.jsonp()`, `req.param()`, `app.use(otherApp)` | Not implemented |
+
 Differences:
 
 - When several patterns match a URL, the most specific wins (static, then
@@ -1004,14 +1074,21 @@ Differences:
   method and path still run in registration order.
 - Duplicate and trailing slashes are always ignored.
 - The default 404 and error responses are JSON.
+- A second `next()` call from the same handler is ignored with a warning;
+  Express continues with the following layer.
+- Automatic `OPTIONS` responses are sent once, after all middleware, and list
+  every method registered for the path. Express answers from inside the
+  innermost router whose routes matched, listing only that router's methods.
+- `res.sendFile()` errors have the standard status text as message; Express
+  passes the file system error, whose message includes the file path.
 - Not implemented: `app.param()`, regular expression routes, several
   parameters in one segment (`/:from-:to`, which throws), parameters in `use()` mount
   paths, mounting another app with `app.use(otherApp)`, `app.engine()` and
   `res.render()`, `res.jsonp()`, `req.param()`, and the
   `"case sensitive routing"`, `"strict routing"`, `"query parser"`,
   `"x-powered-by"` and `"views"` settings.
-- The body parsers don't decompress bodies and `urlencoded()` doesn't parse
-  nested keys.
+- The body parsers don't decompress bodies (415 instead) and `urlencoded()`
+  doesn't parse nested keys.
 
 ## Production notes
 
@@ -1058,11 +1135,19 @@ them. `npm run bench:router` measures route lookups alone.
 ```sh
 npm test               # all tests
 npm run test:coverage  # tests with coverage thresholds
-npm run test:fuzz      # property-based fuzzing, 20,000 runs per property
+npm run test:fuzz      # property-based and differential fuzzing, 20,000 runs per property
 npm run typecheck
 npm run build          # dist/ with type declarations
-npm run bench          # HTTP benchmark against Express
+npm run bench          # HTTP benchmark against Express, with memory and GC figures
+npm run bench:etag     # cost of ETag hashing by body size
 ```
+
+The differential tests (`tests/differential.test.ts`) run every request
+against Express 5 and Pype and compare the responses, and the raw socket tests
+(`tests/http-edge.test.ts`) check HEAD, 204, 304, keep-alive, pipelining,
+aborted bodies, `100-continue` and malformed requests against Express too.
+CI runs everything on Linux and macOS with Node 22, 24 and 26, and a nightly
+job runs the fuzzers at 20,000 runs per property.
 
 See [the architecture guide](https://github.com/HlufD/pipe-router/blob/main/docs/ARCHITECTURE.md) for how the framework is built.
 

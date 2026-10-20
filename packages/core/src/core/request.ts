@@ -5,15 +5,15 @@ import type { Response } from "./response";
 import type { Pype } from "./server";
 import {
   Ranges,
-  acceptedValues,
   isFresh,
+  lookupMime,
   matchContentType,
-  matchLanguage,
-  matchMediaType,
-  matchToken,
-  negotiate,
-  normalizeType,
+  mediaTypeOf,
   parseRange,
+  preferredCharsets,
+  preferredEncodings,
+  preferredLanguages,
+  preferredMediaTypes,
 } from "../utils/helpers";
 import { TrustFunction, trustedAddresses } from "../utils/trust-proxy";
 
@@ -104,19 +104,14 @@ export class Request extends IncomingMessage {
    */
   accepts(...types: (string | string[])[]): string | string[] | false {
     const offers = types.flat();
-    const header = this.get("Accept") as string | undefined;
+    const header = this.headers.accept;
 
-    if (offers.length === 0) return acceptedValues(header || "*/*");
+    if (offers.length === 0) return preferredMediaTypes(header);
     if (!header) return offers[0];
 
-    const ranked = negotiate(
-      header,
-      offers.map(normalizeType),
-      matchMediaType,
-    );
-    if (ranked.length === 0) return false;
-
-    return offers[offers.map(normalizeType).indexOf(ranked[0])];
+    const mimes = offers.map((offer) => (offer.includes("/") ? offer : lookupMime(offer)));
+    const best = preferredMediaTypes(header, mimes.filter((mime) => mime !== false))[0];
+    return best ? offers[mimes.indexOf(best)] : false;
   }
 
   /**
@@ -126,7 +121,7 @@ export class Request extends IncomingMessage {
    * accepted charsets when called without arguments.
    */
   acceptsCharsets(...charsets: (string | string[])[]): string | string[] | false {
-    return this.negotiateHeader("Accept-Charset", charsets.flat(), matchToken);
+    return pick(preferredCharsets, this.headers["accept-charset"] as string | undefined, charsets.flat());
   }
 
   /**
@@ -139,50 +134,43 @@ export class Request extends IncomingMessage {
   acceptsEncodings(
     ...encodings: (string | string[])[]
   ): string | string[] | false {
-    return this.negotiateHeader(
-      "Accept-Encoding",
-      encodings.flat(),
-      matchToken,
-      (offer) => (offer === "identity" ? 1 : undefined),
-      "identity",
-    );
+    return pick(preferredEncodings, this.headers["accept-encoding"] as string | undefined, encodings.flat());
   }
 
   /**
-   * Picks the best language for the `Accept-Language` header. `en` matches
-   * `en-US` and vice versa.
+   * Picks the best language for the `Accept-Language` header. An `en`
+   * preference matches an `en-US` offer and the other way around, `en-GB`
+   * doesn't match `en-US`.
    *
    * @returns The best language, `false` when none is acceptable, or the
    * accepted languages when called without arguments.
    */
   acceptsLanguages(...languages: (string | string[])[]): string | string[] | false {
-    return this.negotiateHeader(
-      "Accept-Language",
-      languages.flat(),
-      matchLanguage,
-    );
+    return pick(preferredLanguages, this.headers["accept-language"] as string | undefined, languages.flat());
   }
 
   /**
    * Checks the request's `Content-Type`.
    *
-   * @param types - Patterns like `"json"`, `"text/*"` or `"+json"`.
-   * @returns The first matching pattern, `false` when none matches, or
-   * `null` when the request has no body.
+   * @param types - Patterns like `"json"`, `"text/*"`, `"+json"`,
+   * `"urlencoded"` or `"multipart"`.
+   * @returns Like `type-is`: the matching pattern, or the actual type for
+   * patterns with `*` or a leading `+`; `false` when none matches or the
+   * `Content-Type` is missing or invalid; `null` when the request has no body.
    */
   is(...types: (string | string[])[]): string | false | null {
     if (!this.hasBody()) return null;
 
-    const header = this.headers["content-type"];
-    if (!header) return false;
+    const actual = mediaTypeOf(this.headers["content-type"]);
+    if (!actual) return false;
 
-    const actual = header.split(";")[0].trim().toLowerCase();
     const patterns = types.flat();
-
     if (patterns.length === 0) return actual;
 
     for (const pattern of patterns) {
-      if (matchContentType(actual, pattern)) return pattern;
+      if (matchContentType(actual, pattern)) {
+        return pattern.startsWith("+") || pattern.includes("*") ? actual : pattern;
+      }
     }
 
     return false;
@@ -312,39 +300,30 @@ export class Request extends IncomingMessage {
     return this.trust(this.socket?.remoteAddress || "", 0);
   }
 
-  /** Whether the request has a body, judged by its headers. */
+  /**
+   * Whether the request has a body, like `type-is`: a `Transfer-Encoding`,
+   * or any numeric `Content-Length`, including 0.
+   */
   private hasBody(): boolean {
     return (
       this.headers["transfer-encoding"] !== undefined ||
-      (this.headers["content-length"] !== undefined &&
-        this.headers["content-length"] !== "0")
+      !Number.isNaN(Number(this.headers["content-length"] ?? NaN))
     );
   }
+}
 
-  /**
-   * Shared logic of the `accepts*` methods.
-   *
-   * @param name - Header to negotiate on.
-   * @param defaultQ - q-value for offers the header doesn't mention.
-   * @param fallback - Returned as the only accepted value when called
-   * without offers and the header is missing.
-   */
-  private negotiateHeader(
-    name: string,
-    offers: string[],
-    match: (pattern: string, offer: string) => number,
-    defaultQ?: (offer: string) => number | undefined,
-    fallback = "*",
-  ): string | string[] | false {
-    const header = this.get(name) as string | undefined;
-
-    if (offers.length === 0) {
-      return header ? acceptedValues(header) : [fallback];
-    }
-
-    if (header === undefined) return offers[0];
-
-    const ranked = negotiate(header, offers, match, defaultQ);
-    return ranked.length > 0 ? ranked[0] : false;
-  }
+/**
+ * Shared logic of `acceptsCharsets`, `acceptsEncodings` and
+ * `acceptsLanguages`, like the `accepts` package.
+ *
+ * @returns The accepted values without offers, otherwise the best offer or
+ * `false`.
+ */
+function pick(
+  preferred: (header: string | undefined, offers?: string[]) => string[],
+  header: string | undefined,
+  offers: string[],
+): string[] | string | false {
+  if (offers.length === 0) return preferred(header);
+  return preferred(header, offers)[0] || false;
 }

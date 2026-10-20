@@ -315,6 +315,8 @@ export class Pype {
    * Runs a request through the layers in registration order. HEAD requests
    * fall back to GET routes, Node drops the body. `next("router")` skips the
    * remaining layers of the innermost router of the layer that called it.
+   * An OPTIONS request that nothing answered gets an `Allow` list of the
+   * path's methods, like Express.
    */
   private handle(rawReq: IncomingMessage, rawRes: ServerResponse) {
     const { req, res } = this.prepare(rawReq, rawRes);
@@ -378,11 +380,41 @@ export class Pype {
         return this.callMiddleware(req, res, layer, err, next);
       }
 
+      if (!err && method === HTTP_METHODS.OPTIONS && !res.headersSent) {
+        const allow = this.allowedMethods(req.path);
+        if (allow) return sendOptions(res, allow);
+      }
+
       this.finalHandler(req, res, err);
     };
 
     req.next = next;
     next();
+  }
+
+  /**
+   * The `Allow` list for an automatic OPTIONS response, like Express: the
+   * methods of every route matching `path` that doesn't handle OPTIONS
+   * itself (so not `all()` routes), HEAD added for GET, sorted and
+   * upper-case. `null` when there are none.
+   */
+  private allowedMethods(path: string): string | null {
+    const methods = new Set<string>();
+    const seen = new Set<RouteLayer>();
+
+    for (const method of Object.values(HTTP_METHODS)) {
+      const match = this.routes.match(path, method);
+      for (const layer of (match && this.routeLayers.get(match.handlers)) || []) {
+        if (seen.has(layer)) continue;
+        seen.add(layer);
+        if (layer.methods.includes(HTTP_METHODS.OPTIONS)) continue;
+
+        for (const name of layer.methods) methods.add(name.toUpperCase());
+        if (layer.methods.includes(HTTP_METHODS.GET)) methods.add("HEAD");
+      }
+    }
+
+    return methods.size > 0 ? [...methods].sort().join(", ") : null;
   }
 
   /**
@@ -567,6 +599,15 @@ function once(fn: (err?: any) => void) {
     called = true;
     fn(err);
   };
+}
+
+/** Answers an OPTIONS request nothing handled, like Express's router. */
+function sendOptions(res: Response, allow: string) {
+  res.setHeader("Allow", allow);
+  res.setHeader("Content-Length", Buffer.byteLength(allow));
+  res.setHeader("Content-Type", "text/plain");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.end(allow);
 }
 
 /** HTTP status of an error, from `status` or `statusCode`, 500 otherwise. */

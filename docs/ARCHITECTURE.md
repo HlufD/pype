@@ -265,7 +265,10 @@ Signals passed to `next`:
 - `next("router")`: the loop skips every following layer that belongs to the
   innermost router of the layer that called it.
 
-When no layer is left, `finalHandler()` responds.
+When no layer is left, an `OPTIONS` request without an error gets the
+automatic `Allow` response of `allowedMethods()`: the methods of every route
+layer matching the path that doesn't handle `OPTIONS` itself, like Express.
+Otherwise `finalHandler()` responds.
 
 #### `callMiddleware()` and `runRoute()`
 
@@ -470,8 +473,10 @@ still there. It adds:
 - **Methods**: `get`/`header`, `accepts*`, `is`, `range`.
 
 Content negotiation (`accepts`, `acceptsCharsets`, `acceptsEncodings`,
-`acceptsLanguages`) is built on `negotiate()` in `helpers.ts`; see
-[Helpers](#helpers). The proxy-aware getters ask the app's `"trust proxy fn"`
+`acceptsLanguages`) is built on the `preferred*()` functions in `helpers.ts`,
+and `is()` on `mediaTypeOf()` and `matchContentType()`; see
+[Helpers](#helpers). `hasBody()` follows `type-is`: a `Transfer-Encoding` or
+any numeric `Content-Length`, including 0. The proxy-aware getters ask the app's `"trust proxy fn"`
 whether the socket peer is trusted before reading `X-Forwarded-*` headers;
 see [Trust proxy](#trust-proxy).
 
@@ -514,7 +519,9 @@ to a `Buffer` first.
 
 1. `resolveFilePath()` rejects null bytes (400), `..` segments and paths that
    resolve outside `root` (403), and applies the dotfile policy.
-2. `fs.stat` the file. Missing files and directories become 404.
+2. `fs.stat` the file. Missing files become 404, directories an `EISDIR`
+   error. With `followSymlinks: false`, `checkRealPath()` first resolves the
+   real paths of the file and the root and answers 403 if the file is outside.
 3. `setFileHeaders()` sets `Content-Type`, `Accept-Ranges`, `Cache-Control`,
    `Last-Modified` and a weak `ETag` built from size and modification time.
 4. Fresh conditional requests get 304. A single satisfiable `Range` gets 206
@@ -522,7 +529,11 @@ to a `Buffer` first.
 5. The file is streamed with `stream.pipeline(createReadStream(...), res)`,
    which closes the file when the client disconnects. A plain `pipe()` would
    leak a file descriptor per aborted download.
-6. Errors go to the callback when one is given, otherwise to `sendStatus()`.
+6. Errors go to the callback when one is given. Otherwise, like Express, a
+   client that disconnected is ignored, a directory calls `next()`, and any
+   other error is passed to `next(err)` as an `HttpError` with the status and
+   the file system `code`. A fresh error is used so file paths don't end up in
+   a message the final handler would show.
 
 `download()` resolves the path, sets `Content-Disposition` and delegates to
 `sendFile()`.
@@ -539,7 +550,8 @@ inject attributes into `Set-Cookie`.
 
 `src/middlewares/body-parser.ts`
 
-All four parsers come from one factory, `createParser(defaultType, options, parse)`:
+All four parsers come from one factory, `createParser(config, options, parse)`,
+where `config` holds the default type and which charsets the parser accepts:
 
 ```mermaid
 flowchart TB
@@ -547,17 +559,27 @@ flowchart TB
     B -- yes --> Z["next()"]
     B -- no --> C{"Content-Type matches?"}
     C -- no --> Z
-    C -- yes --> D{"Content-Encoding<br/>identity?"}
-    D -- no --> E["next(415 error)"]
+    C -- yes --> K{"charset accepted?"}
+    K -- no --> E["next(415 error)"]
+    K -- yes --> D{"Content-Encoding<br/>identity?"}
+    D -- no --> E
     D -- yes --> F["readBody(limit)"]
     F -- "over limit" --> G["next(413 error)"]
-    F -- ok --> H["parse()"]
+    F -- "client gone" --> I
+    F -- ok --> L["decode(charset)"]
+    L --> H["parse()"]
     H -- throws --> I["next(400 error)"]
     H -- ok --> J["req.body = result; req._body = true; next()"]
 ```
 
-- `readBody()` rejects early when `Content-Length` is above the limit, and
-  stops reading as soon as the received bytes pass it.
+- `readBody()` rejects early when `Content-Length` is above the limit, stops
+  reading as soon as the received bytes pass it, and rejects with a 400
+  `request.aborted` when the client disconnects first, like `raw-body`.
+- `decode()` turns the bytes into text: ISO-8859-1 byte for byte, UTF-32 by
+  hand, everything else with `TextDecoder`, dropping a byte order mark like
+  `iconv-lite`.
+- `urlencoded()` uses `parseForm()`, the rules of `qs` at depth 0 that
+  `body-parser` applies with `extended: false`.
 - The "already read" check matters: the `body-parser` package marks bodies by
   consuming the stream, and waiting on an ended stream would hang forever.
 - Errors are `BodyParseError`s with `status`, `statusCode`, `expose` and
@@ -591,20 +613,26 @@ client first.
 
 | Function | Used by | What it does |
 | -------- | ------- | ------------ |
-| `negotiate()`, `acceptedValues()`, matchers | `req.accepts*` | Ranks offers by the client's q-values |
-| `matchContentType()`, `normalizeType()`, `contentType()` | `req.is`, `res.type`, `res.set` | Media type matching and `Content-Type` values |
+| `preferredMediaTypes()`, `preferredCharsets()`, `preferredEncodings()`, `preferredLanguages()` | `req.accepts*`, `res.format` | The algorithms of `negotiator` 1.x, which Express's `accepts` uses |
+| `mediaTypeOf()`, `matchContentType()`, `lookupMime()` | `req.is`, body parsers | `type-is` rules: valid media types, extensions, `*/*`, `+suffix`, `urlencoded`, `multipart` |
+| `normalizeType()`, `contentType()`, `setCharset()` | `res.type`, `res.set`, `res.send` | `Content-Type` values with the charsets Express adds |
+| `parseTokenList()` | `isFresh()`, `res.vary` | Comma-separated header lists |
 | `parseRange()` | `req.range`, `sendFile` | Parses `Range`, optionally merging ranges |
 | `isFresh()` | `req.fresh` | `If-None-Match` / `If-Modified-Since` rules of the `fresh` package |
 | `generateETag()` | `res.send` | Weak ETag `W/"<size>-<sha1>"`, like Express |
 | `serializeCookie()`, `signCookie()` | `res.cookie` | Validated `Set-Cookie` values and signatures |
 | `encodeUrl()`, `escapeHtml()` | `res.location`, `res.redirect` | Safe URLs and HTML |
-| `contentDisposition()` | `res.attachment`, `res.download` | RFC 5987 file names |
-| `parseQuery()` | `prepare()`, `urlencoded()` | Prototype-less query objects |
+| `contentDisposition()` | `res.attachment`, `res.download` | `content-disposition` rules: token, quoted or RFC 5987 file names |
+| `parseQuery()` | `prepare()` | Node's `querystring.parse`, Express 5's default query parser |
 
-`negotiate()` gives each offer the q-value of the **most specific** client
-preference that matches it, so `text/html;q=0, */*` refuses `text/html` even
-though `*/*` would accept it. Ties are broken by the client's order, then the
-server's.
+The `preferred*()` functions give each offer the q-value of the **most
+specific** client preference that matches it (a bitmask: type, subtype and
+parameters for media types; exact, prefix and `*` for languages), so
+`text/html;q=0, */*` refuses `text/html` even though `*/*` would accept it.
+Ties are broken by specificity, the client's order, then the server's.
+Without offers they list the accepted values with the client's spelling.
+`preferredEncodings()` adds an implied `identity` with the header's lowest
+q-value unless a preference already covers it.
 
 ### Types and Express compatibility
 
@@ -718,11 +746,18 @@ changes.
 | `tests/helpers.test.ts` | Helper functions directly |
 | `tests/security.test.ts` | Regression tests for security fixes |
 | `tests/fuzz.test.ts` | Property-based tests with fast-check |
+| `tests/differential.test.ts` | The same routes on Express 5 and Pype; every request, including fuzzed headers and bodies, must get the same status, headers and body. Known differences are asserted separately, so a change in them fails too |
+| `tests/http-edge.test.ts` | Raw socket checks against both frameworks: HEAD, 204 and 304 without body bytes, keep-alive, pipelining, aborted bodies and downloads, `100-continue`, half-closed connections, malformed requests |
 | `tests/support/http.ts` | Shared client that starts an app on a free port |
 
+`tests/trie.test.ts` also checks the router against a reference model of the
+precedence rules with generated route sets, matches 10,000 routes, and
+times a lookup that has to backtrack through overlapping branches.
+
 Coverage thresholds (95% statements, functions and lines, 90% branches) are
-enforced by `vitest.config.ts`, and CI runs type checks, tests and a package
-build on Node 22 and 24.
+enforced by `vitest.config.ts`. CI runs type checks, tests and a package
+build on Linux and macOS with Node 22, 24 and 26; a nightly workflow runs
+`npm run test:fuzz`, 20,000 runs per property.
 
 ## Extending Pype
 
@@ -756,5 +791,7 @@ before and after.
 - No `app.param()`, regex routes, several params in one segment, params in
   `use()` mount paths, or mounting another app with `app.use(otherApp)`.
 - No view rendering (`app.engine`, `res.render`) or `res.jsonp`.
-- Body parsers don't decompress bodies or handle charsets other than UTF-8,
-  and `urlencoded()` doesn't parse nested keys.
+- Body parsers don't decompress bodies, and `urlencoded()` doesn't parse
+  nested keys.
+- Automatic `OPTIONS` responses come from the app after all middleware, not
+  from inside the router whose routes matched as in Express.

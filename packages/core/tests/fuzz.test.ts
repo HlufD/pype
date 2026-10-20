@@ -13,8 +13,7 @@ import { HTTP_METHODS } from "../src/enums/methods.enum";
 import {
   contentDisposition,
   encodeUrl,
-  matchMediaType,
-  negotiate,
+  preferredMediaTypes,
   parseQuery,
   parseRange,
   serializeCookie,
@@ -56,11 +55,11 @@ describe("parsers never throw and keep their invariants", () => {
     );
   });
 
-  it("negotiate only returns offered values", () => {
+  it("preferredMediaTypes only returns offered values", () => {
     const offers = ["application/json", "text/html", "text/plain", "image/png"];
     fc.assert(
       fc.property(fc.string(), (header) => {
-        for (const offer of negotiate(header, offers, matchMediaType)) {
+        for (const offer of preferredMediaTypes(header, offers)) {
           expect(offers).toContain(offer);
         }
       }),

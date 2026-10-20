@@ -7,11 +7,13 @@ import {
   generateETag,
   isFresh,
   matchContentType,
-  matchLanguage,
-  matchMediaType,
-  matchToken,
-  negotiate,
+  mediaTypeOf,
   parseQuery,
+  preferredCharsets,
+  preferredEncodings,
+  preferredLanguages,
+  preferredMediaTypes,
+  setCharset,
   parseRange,
   serializeCookie,
   signCookie,
@@ -19,12 +21,12 @@ import {
 
 describe("serializeCookie", () => {
   it("rejects values the encoder leaves unsafe", () => {
-    expect(() => serializeCookie("a", "x;y", { encode: (v) => v })).toThrow("Invalid cookie value");
+    expect(() => serializeCookie("a", "x;y", { encode: (v) => v })).toThrow("argument val is invalid");
   });
 
   it("rejects invalid maxAge and expires", () => {
-    expect(() => serializeCookie("a", "1", { maxAge: Infinity })).toThrow("finite");
-    expect(() => serializeCookie("a", "1", { expires: new Date("nope") })).toThrow("valid date");
+    expect(() => serializeCookie("a", "1", { maxAge: Infinity })).toThrow("option maxAge is invalid");
+    expect(() => serializeCookie("a", "1", { expires: new Date("nope") })).toThrow("option expires is invalid");
   });
 
   it("rejects attributes that would inject into the header", () => {
@@ -60,34 +62,43 @@ describe("signCookie", () => {
 });
 
 describe("content negotiation", () => {
-  it("matchers rank specificity", () => {
-    expect(matchMediaType("*/*", "text/html")).toBe(0);
-    expect(matchMediaType("text/*", "text/html")).toBe(1);
-    expect(matchMediaType("text/html", "text/html; level=1")).toBe(2);
-    expect(matchMediaType("text/plain", "text/html")).toBe(-1);
-    expect(matchToken("*", "gzip")).toBe(0);
-    expect(matchToken("br", "gzip")).toBe(-1);
-    expect(matchLanguage("*", "en")).toBe(0);
-    expect(matchLanguage("en-us", "en-us")).toBe(2);
-    expect(matchLanguage("en", "en-gb")).toBe(1);
-    expect(matchLanguage("fr", "en")).toBe(-1);
+  it("ranks media types by quality, then specificity, then header order", () => {
+    expect(preferredMediaTypes("text/*;q=0.5, text/html", ["text/plain", "text/html"])).toEqual(["text/html", "text/plain"]);
+    expect(preferredMediaTypes("*/*, text/html;q=0", ["text/html", "image/png"])).toEqual(["image/png"]);
+    expect(preferredMediaTypes("text/html;level=1", ["text/html", "text/html;level=1"])).toEqual(["text/html;level=1"]);
+    expect(preferredMediaTypes(undefined, ["image/png"])).toEqual(["image/png"]);
+    expect(preferredMediaTypes("a/b;q=bad", ["a/b"])).toEqual([]);
   });
 
-  it("negotiate prefers the most specific preference and keeps client order", () => {
-    expect(negotiate("text/*;q=0.5, text/html", ["text/plain", "text/html"], matchMediaType)).toEqual([
-      "text/html",
-      "text/plain",
-    ]);
-    expect(negotiate("*/*, text/html;q=0", ["text/html", "image/png"], matchMediaType)).toEqual([
+  it("lists accepted values with their original case", () => {
+    expect(preferredMediaTypes("TEXT/HTML, application/json;q=0.5, image/*;q=0")).toEqual(["TEXT/HTML", "application/json"]);
+    expect(preferredLanguages("EN-us, fr;q=0.5")).toEqual(["EN-us", "fr"]);
+    expect(preferredCharsets(undefined)).toEqual(["*"]);
+  });
+
+  it("keeps quoted commas and semicolons inside parameters", () => {
+    expect(preferredMediaTypes('text/html;x="a,b;c", image/png', ["image/png", 'text/html;x="a,b;c"'])).toEqual([
+      'text/html;x="a,b;c"',
       "image/png",
     ]);
-    expect(negotiate("a;q=bad", ["a"], matchToken)).toEqual([]);
   });
 
-  it("negotiate uses defaultQ for unmentioned offers", () => {
-    expect(negotiate("gzip", ["identity", "br"], matchToken, (o) => (o === "identity" ? 0.5 : undefined))).toEqual([
-      "identity",
-    ]);
+  it("makes identity acceptable unless refused, and the only encoding without a header", () => {
+    expect(preferredEncodings(undefined)).toEqual(["identity"]);
+    expect(preferredEncodings("gzip")).toEqual(["gzip", "identity"]);
+    // The implied identity takes the lowest q-value of the header, like negotiator.
+    expect(preferredEncodings("gzip;q=0.5", ["identity", "gzip"])).toEqual(["gzip", "identity"]);
+    expect(preferredEncodings("gzip, br;q=0.2")).toEqual(["gzip", "br", "identity"]);
+    expect(preferredEncodings("gzip, identity;q=0")).toEqual(["gzip"]);
+    expect(preferredEncodings("*")).toEqual(["*"]);
+    expect(preferredEncodings("*;q=0", ["identity"])).toEqual([]);
+  });
+
+  it("matches languages by prefix in one direction per specificity", () => {
+    expect(preferredLanguages("en", ["en-US"])).toEqual(["en-US"]);
+    expect(preferredLanguages("en-US", ["en"])).toEqual(["en"]);
+    expect(preferredLanguages("en-GB", ["en-US"])).toEqual([]);
+    expect(preferredLanguages("en-US, en;q=0.5", ["en", "en-US"])).toEqual(["en-US", "en"]);
   });
 });
 
@@ -100,6 +111,19 @@ describe("content types", () => {
     expect(contentType("unknownext")).toBe("unknownext");
   });
 
+  it("mediaTypeOf validates and lower-cases the type", () => {
+    expect(mediaTypeOf("Text/HTML; charset=utf-8")).toBe("text/html");
+    expect(mediaTypeOf("invalid")).toBeNull();
+    expect(mediaTypeOf("text/")).toBeNull();
+    expect(mediaTypeOf(undefined)).toBeNull();
+  });
+
+  it("setCharset replaces the charset and sorts parameters like Express", () => {
+    expect(setCharset("text/html", "utf-8")).toBe("text/html; charset=utf-8");
+    expect(setCharset("Text/Plain; Format=flowed; charset=latin1", "utf-8")).toBe("text/plain; charset=utf-8; format=flowed");
+    expect(setCharset('text/plain; x="a b"', "utf-8")).toBe('text/plain; charset=utf-8; x="a b"');
+  });
+
   it("matchContentType supports extensions, wildcards and suffixes", () => {
     expect(matchContentType("application/json", "json")).toBe(true);
     expect(matchContentType("text/csv", "text/*")).toBe(true);
@@ -108,6 +132,9 @@ describe("content types", () => {
     expect(matchContentType("application/xml", "+json")).toBe(false);
     expect(matchContentType("text/plain", "image/*")).toBe(false);
     expect(matchContentType("invalid", "text/plain")).toBe(false);
+    expect(matchContentType("application/x-www-form-urlencoded", "urlencoded")).toBe(true);
+    expect(matchContentType("multipart/form-data", "multipart")).toBe(true);
+    expect(matchContentType("text/plain", "unknownext")).toBe(false);
   });
 });
 

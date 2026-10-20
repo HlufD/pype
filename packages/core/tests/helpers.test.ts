@@ -106,6 +106,17 @@ describe("parseRange", () => {
     expect([...(parseRange(100, "bytes=0-500") as any)]).toEqual([{ start: 0, end: 99 }]);
   });
 
+  it("treats the whole header as malformed when one range is, like range-parser", () => {
+    for (const header of ["bytes=garbage", "bytes=0-1,garbage", "bytes=5abc-10", "bytes=0-1x", "bytes=-", "bytes=1.5-3"]) {
+      expect(parseRange(100, header)).toBe(-2);
+    }
+  });
+
+  it("skips unsatisfiable ranges but keeps satisfiable ones", () => {
+    expect([...(parseRange(100, "bytes=5-1,0-1") as any)]).toEqual([{ start: 0, end: 1 }]);
+    expect([...(parseRange(100, "bytes= 0 - 4 ") as any)]).toEqual([{ start: 0, end: 4 }]);
+  });
+
   it("combines overlapping and adjacent ranges", () => {
     const ranges = parseRange(100, "bytes=20-30, 0-10, 11-15, 25-40", { combine: true }) as any;
     expect(ranges.type).toBe("bytes");

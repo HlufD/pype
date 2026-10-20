@@ -319,21 +319,27 @@ function parseRange(
   const ranges = [] as unknown as Ranges;
   ranges.type = header.slice(0, eq).trim();
 
+  // Same rules as the `range-parser` package: one malformed range makes the
+  // whole header malformed, unsatisfiable ranges are skipped.
   for (const part of header.slice(eq + 1).split(",")) {
-    const [rawStart, rawEnd] = part.trim().split("-");
-    let start = parseInt(rawStart, 10);
-    let end = parseInt(rawEnd, 10);
+    const dash = part.indexOf("-");
+    if (dash === -1) return -2;
 
-    if (Number.isNaN(start)) {
+    const rawStart = part.slice(0, dash).trim();
+    const rawEnd = part.slice(dash + 1).trim();
+    let start = parsePosition(rawStart);
+    let end = parsePosition(rawEnd);
+
+    if (rawStart === "") {
       start = size - end;
       end = size - 1;
-    } else if (Number.isNaN(end)) {
+    } else if (rawEnd === "") {
       end = size - 1;
     }
 
     if (end > size - 1) end = size - 1;
-    if (Number.isNaN(start) || Number.isNaN(end) || start > end || start < 0)
-      continue;
+    if (Number.isNaN(start) || Number.isNaN(end)) return -2;
+    if (start > end || start < 0) continue;
 
     ranges.push({ start, end });
   }
@@ -341,6 +347,11 @@ function parseRange(
   if (ranges.length < 1) return -1;
 
   return options.combine ? combineRanges(ranges) : ranges;
+}
+
+/** Parses a range position, only plain digits are allowed. */
+function parsePosition(value: string) {
+  return /^\d+$/.test(value) ? Number(value) : NaN;
 }
 
 /** Merges overlapping and adjacent ranges, sorted by start. */

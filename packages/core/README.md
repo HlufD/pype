@@ -335,10 +335,13 @@ compiled.
 
 Throws a `TypeError` if a handler isn't a function or a `PypeRouter`.
 
-#### `app.get(path, ...handlers)`, `post`, `put`, `patch`, `delete`, `head`, `options`, `all`
+#### `app.get(path, ...handlers)`, `post`, `put`, `patch`, `delete`, `head`, `options`, `all`, ...
 
 Adds a route for one HTTP method, or for every method with `all()`. Handlers
-can be functions or arrays of functions and run in order.
+can be functions or arrays of functions and run in order. Like in Express,
+every method Node knows (`http.METHODS`) has one, in lower case:
+`app.purge()`, `app.propfind()`, `app.search()`, `app["m-search"]()`, ...
+On the app, `app.bind()` is the route method for BIND, as on an Express app.
 
 ```ts
 app.get("/users", list);
@@ -455,8 +458,8 @@ users.route("/:id/avatar").get(getAvatar).put(setAvatar);
 app.use("/users", users);
 ```
 
-A router has the same `use`, `get`, `post`, `put`, `patch`, `delete`, `head`,
-`options`, `all` and `route` methods as the app, with the same behaviour.
+A router has the same `use`, `route`, `all` and route methods (`get`, `post`,
+..., one per HTTP method) as the app, with the same behaviour.
 Routers can be nested, for example `api.use("/users", users)` and then
 `app.use("/api", api)`.
 

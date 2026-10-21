@@ -1,4 +1,4 @@
-import { HTTP_METHODS } from "../enums/methods.enum";
+import { HTTP_METHODS, METHODS } from "../enums/methods.enum";
 import { AnyHandler, ErrorMiddleware, Middleware } from "../types/middleware";
 import { RouteHandler } from "../types/route-handler";
 
@@ -8,8 +8,21 @@ export type UseHandler = Middleware | ErrorMiddleware | AnyHandler | PypeRouter 
 /** A route handler or a (nested) array of them. */
 export type HandlerParam = RouteHandler | AnyHandler | HandlerParam[];
 
-/** Every supported HTTP method, used by `all()`. */
-const ALL_METHODS = Object.values(HTTP_METHODS);
+/**
+ * HTTP methods without a route method written out below; theirs are added
+ * from Node's `http.METHODS`, like Express: `router.purge()`,
+ * `router["m-search"]()`.
+ */
+export type ExtraMethod =
+  | "acl" | "bind" | "checkout" | "connect" | "copy" | "link" | "lock" | "m-search"
+  | "merge" | "mkactivity" | "mkcalendar" | "mkcol" | "move" | "notify" | "propfind"
+  | "proppatch" | "purge" | "query" | "rebind" | "report" | "search" | "source"
+  | "subscribe" | "trace" | "unbind" | "unlink" | "unlock" | "unsubscribe";
+
+/** Route methods for {@link ExtraMethod}, returning `T` for chaining. */
+export type ExtraRouteMethods<T> = {
+  [M in ExtraMethod]: (path: PathParam, ...handlers: HandlerParam[]) => T;
+};
 
 /** Bumped on every registration so apps know to rebuild their routing table. */
 let version = 0;
@@ -24,7 +37,7 @@ export type PathParam = string | RegExp | Array<string | RegExp>;
 type StackEntry =
   | { type: "use"; path: PathParam; handlers: AnyHandler[] }
   | { type: "router"; path: PathParam; router: PypeRouter }
-  | { type: "route"; path: PathParam; methods: HTTP_METHODS[]; handlers: AnyHandler[] };
+  | { type: "route"; path: PathParam; methods: string[]; handlers: AnyHandler[] };
 
 /** Options of {@link PypeRouter}, like Express's `Router()` options. */
 export interface RouterOptions {
@@ -80,8 +93,8 @@ export interface RouteLayer {
   group?: object;
   /** Mount path of the route's router, exposed as `req.baseUrl`. */
   baseUrl: string;
-  /** HTTP methods the route responds to. */
-  methods: HTTP_METHODS[];
+  /** HTTP methods the route responds to, in lower case. */
+  methods: string[];
   /** Handlers, run in order. */
   handlers: AnyHandler[];
   /** Routers this layer belongs to, outermost first. */
@@ -113,6 +126,8 @@ export interface RouterEndLayer {
 
 /** One step of the request pipeline. */
 export type Layer = MiddlewareLayer | RouteLayer | RouterEndLayer;
+
+export interface RouteBuilder extends Record<ExtraMethod, (...handlers: HandlerParam[]) => RouteBuilder> {}
 
 /** Chainable route definition returned by {@link PypeRouter.route}. */
 export class RouteBuilder {
@@ -173,6 +188,8 @@ export class RouteBuilder {
     return this;
   }
 }
+
+export interface PypeRouter extends ExtraRouteMethods<PypeRouter> {}
 
 /**
  * Express-style router: middleware, routes and sub-routers run in the order
@@ -281,7 +298,7 @@ export class PypeRouter {
   all(path: PathParam, ...handlers: RouteHandler[]): this;
   all(path: PathParam, ...handlers: HandlerParam[]): this;
   all(path: PathParam, ...handlers: HandlerParam[]): this {
-    return this.addRoute(path, ALL_METHODS, handlers);
+    return this.addRoute(path, METHODS, handlers);
   }
 
   /**
@@ -445,7 +462,7 @@ export class PypeRouter {
    *
    * @throws When no handlers are given or one isn't a function.
    */
-  private addRoute(path: PathParam, methods: HTTP_METHODS[], handlers: HandlerParam[]) {
+  private addRoute(path: PathParam, methods: string[], handlers: HandlerParam[]) {
     const flat = (handlers as unknown[]).flat(Infinity) as AnyHandler[];
 
     if (flat.length === 0 || flat.some((h) => typeof h !== "function")) {
@@ -456,6 +473,26 @@ export class PypeRouter {
     version++;
     return this;
   }
+}
+
+// Every other HTTP method gets a route method too, like in Express.
+for (const method of METHODS) {
+  if (Object.prototype.hasOwnProperty.call(PypeRouter.prototype, method)) continue;
+  Object.defineProperty(PypeRouter.prototype, method, {
+    configurable: true,
+    writable: true,
+    value(this: PypeRouter, path: PathParam, ...handlers: HandlerParam[]) {
+      return (this as any).addRoute(path, [method], handlers);
+    },
+  });
+  Object.defineProperty(RouteBuilder.prototype, method, {
+    configurable: true,
+    writable: true,
+    value(this: RouteBuilder, ...handlers: HandlerParam[]) {
+      (this as any).router[method]((this as any).path, ...handlers);
+      return this;
+    },
+  });
 }
 
 /**

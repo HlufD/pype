@@ -849,9 +849,11 @@ through `this.app?.settings`.
 preprocessing (like `"trust proxy"`), compute it in `set()` and store the
 result under a separate key.
 
-**A new HTTP method.** Add it to `HTTP_METHODS`, then add the method to
-`PypeRouter`, `RouteBuilder` and `Pype` following the existing ones. `all()`
-picks it up automatically.
+**HTTP methods.** Every method in Node's `http.METHODS` gets a route
+method on `PypeRouter`, `RouteBuilder` and `Pype`, added to their prototypes
+from `METHODS` (`enums/methods.enum.ts`); the common ones are written out.
+New Node methods are picked up automatically, and `ExtraMethod` lists the
+others for TypeScript.
 
 **Router features.** Matching lives entirely in `RouteNode`. Keep the
 precedence order (static, param, wildcard) and backtracking, run

@@ -973,6 +973,41 @@ describe("body parser edge cases match Express", () => {
   });
 });
 
+describe("every HTTP method matches Express", () => {
+  let pair: Pair;
+  const methods = ["PURGE", "PROPFIND", "SEARCH", "TRACE", "QUERY", "LOCK", "MKCOL", "M-SEARCH", "REPORT"];
+
+  beforeAll(async () => {
+    pair = await startPair((app, kind) => {
+      const k = kit(kind);
+      const reply = (where: string) => (req: any, res: any) => res.json({ where, method: req.method, params: req.params });
+      app.purge("/cache/:key", reply("app.purge"));
+      app.propfind("/dav", reply("app.propfind"));
+      app["m-search"]("/ssdp", reply("app.m-search"));
+      app.all("/any", reply("app.all"));
+      app.route("/chain").search(reply("route.search")).report(reply("route.report"));
+      const router = k.Router();
+      router.lock("/file", reply("router.lock"));
+      router.mkcol("/dir", reply("router.mkcol"));
+      app.use("/r", router);
+      app.get("/get-only", reply("get"));
+      app.use((req: any, res: any) => res.status(404).json({ notFound: `${req.method} ${req.path}` }));
+    });
+  });
+
+  afterAll(() => Promise.all([pair.express.close(), pair.pype.close()]));
+
+  it.each(methods)("%s requests", async (method) => {
+    for (const path of ["/cache/abc", "/dav", "/ssdp", "/any", "/chain", "/r/file", "/r/dir", "/get-only"]) {
+      await same(path, { method }, pair);
+    }
+  });
+
+  it.each(["/cache/abc", "/dav", "/chain", "/r/file", "/any"])("automatic OPTIONS lists them: %s", (path) =>
+    same(path, { method: "OPTIONS" }, pair),
+  );
+});
+
 describe("automatic OPTIONS matches Express", () => {
   let pair: Pair;
 

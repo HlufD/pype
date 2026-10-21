@@ -5,10 +5,11 @@ import {
   ServerResponse,
   createServer,
 } from "http";
-import { HTTP_METHODS } from "../enums/methods.enum";
+import { HTTP_METHODS, METHODS } from "../enums/methods.enum";
 import { RouteHandler } from "../types/route-handler";
 import { lowerAscii, RouteNode } from "../utils/Trie-Route";
 import {
+  ExtraRouteMethods,
   HandlerParam,
   Layer,
   MiddlewareLayer,
@@ -36,7 +37,7 @@ type Settings = Record<string, any>;
  * `http.createServer(app)`, `https.createServer(options, app)` and
  * `supertest(app)` work.
  */
-export interface Pype {
+export interface Pype extends ExtraRouteMethods<Pype> {
   (req: IncomingMessage, res: ServerResponse): void;
 }
 
@@ -76,6 +77,8 @@ export class Pype {
   private compiledVersion = -1;
   /** The `"case sensitive routing"` setting the routing table was built with. */
   private caseSensitive = true;
+  /** Methods that have routes in the tree, the only ones worth looking up for another method. */
+  private routedMethods: string[] = [];
 
   /**
    * @param settings - Initial settings, applied with {@link Pype.set}.
@@ -446,6 +449,7 @@ export class Pype {
     this.layers = layers;
     this.routes = routes;
     this.routeLayers = routeLayers;
+    this.routedMethods = [...new Set([...entries.keys()].map((key) => key.slice(0, key.indexOf(" "))))];
     this.layerIndex = new Map(layers.map((layer, index) => [layer, index]));
     this.fixedIndices = [];
     layers.forEach((layer, index) => {
@@ -472,7 +476,7 @@ export class Pype {
       return this.finalHandler(req, res, error);
     }
 
-    const method = (req.method || "GET").toLowerCase() as HTTP_METHODS;
+    const method = (req.method || "GET").toLowerCase();
 
     const match =
       this.routes.match(req.path, method) ??
@@ -632,7 +636,7 @@ export class Pype {
   /** Route layers in the tree that match `path` for some method but whose params fail to decode, with the error. */
   private decodeErrorsFor(path: string): Map<RouteLayer, Error> | null {
     let found: Map<RouteLayer, Error> | null = null;
-    for (const method of Object.values(HTTP_METHODS)) {
+    for (const method of this.routedMethods) {
       const match = this.routes.match(path, method);
       if (!match?.error) continue;
       for (const layer of this.routeLayers.get(match.handlers) ?? []) (found ??= new Map()).set(layer, match.error);
@@ -643,7 +647,7 @@ export class Pype {
   /** Route layers in the tree that match `path` for any method, for automatic OPTIONS. */
   private routeLayersFor(path: string): Set<RouteLayer> {
     const found = new Set<RouteLayer>();
-    for (const method of Object.values(HTTP_METHODS)) {
+    for (const method of this.routedMethods) {
       const match = this.routes.match(path, method);
       // A param that fails to decode makes Express skip the route.
       if (!match || match.error) continue;
@@ -865,6 +869,21 @@ export class Pype {
 // `app instanceof Function` work like with Express.
 Object.setPrototypeOf(Pype.prototype, Function.prototype);
 
+// Every other HTTP method gets a route method too, like in Express. On the
+// app, that includes `bind` for BIND, which replaces Function's `bind` as
+// it does on an Express app.
+for (const method of METHODS) {
+  if (Object.prototype.hasOwnProperty.call(Pype.prototype, method)) continue;
+  Object.defineProperty(Pype.prototype, method, {
+    configurable: true,
+    writable: true,
+    value(this: Pype, path: PathParam, ...handlers: HandlerParam[]) {
+      (this as any).router[method](path, ...handlers);
+      return this;
+    },
+  });
+}
+
 /** Creates the route trie with Express's slash handling. */
 function createRouteTable(caseSensitive = true) {
   return new RouteNode({
@@ -1075,7 +1094,7 @@ function routeMatchesPath(layer: RouteLayer, path: string, treeLayers: Set<Route
 }
 
 /** Whether a route handles a method, HEAD falling back to GET like Express. */
-function handlesMethod(layer: RouteLayer, method: HTTP_METHODS) {
+function handlesMethod(layer: RouteLayer, method: string) {
   if (layer.methods.includes(method)) return true;
   return method === HTTP_METHODS.HEAD && layer.methods.includes(HTTP_METHODS.GET);
 }

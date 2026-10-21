@@ -1,4 +1,3 @@
-import { HTTP_METHODS } from "../enums/methods.enum";
 import { RouteHandler } from "../types/route-handler";
 
 /** Information about a registered route, exposed as `req.route`. */
@@ -148,7 +147,7 @@ class RouteNode {
    */
   register(
     url: string,
-    method: HTTP_METHODS,
+    method: string,
     handlers: RouteHandler[],
     meta: Partial<RouteMeta> = {},
   ) {
@@ -180,7 +179,7 @@ class RouteNode {
    * @returns The matched handlers, decoded params and route metadata, or
    * `null` when nothing matches.
    */
-  match(url: string, method: HTTP_METHODS): MatchResult | null {
+  match(url: string, method: string): MatchResult | null {
     const path = this.normalize(url);
     // Compared folded, while param values are cut from `path` with their case.
     const folded = this.fold(path);

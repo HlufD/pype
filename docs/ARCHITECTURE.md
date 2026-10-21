@@ -241,7 +241,7 @@ fields, and returns it, so `new Pype()` can be passed to
 | `router` | The root `PypeRouter`. |
 | `layers`, `routes`, `routeLayers` | The compiled table, rebuilt by `compile()`. |
 | `compiledVersion` | The `routingVersion()` the table was built from. |
-| `caseSensitive` | The `"case sensitive routing"` setting the table was built with; changing the setting rebuilds it. |
+| `caseSensitive`, `strict` | The `"case sensitive routing"` and `"strict routing"` settings the table was built with; changing either rebuilds it. With `strict`, the tree keeps trailing slashes, and a router's `"/"` route is registered for its mount path with and without the slash. |
 
 #### `prepare(req, res)`
 
@@ -693,7 +693,7 @@ client first.
 | `parseRange()` | `req.range`, `sendFile` | Parses `Range`, optionally merging ranges in the order they were asked for, like `range-parser` |
 | `isFresh()` | `req.fresh` | `If-None-Match` / `If-Modified-Since` rules of the `fresh` package |
 | `isPreconditionFailure()`, `isRangeFresh()` | `sendFile` | `If-Match` / `If-Unmodified-Since` and `If-Range` rules of Express's `send` |
-| `generateETag()` | `res.send` | Weak ETag `W/"<size>-<sha1>"`, like Express |
+| `generateETag()`, `generateStrongETag()` | `res.send` | ETags `W/"<size>-<sha1>"` and `"<size>-<sha1>"`, like Express's `"etag"` setting |
 | `serializeCookie()`, `signCookie()` | `res.cookie` | Validated `Set-Cookie` values and signatures |
 | `encodeUrl()`, `escapeHtml()` | `res.location`, `res.redirect` | Safe URLs and HTML |
 | `contentDisposition()` | `res.attachment`, `res.download` | `content-disposition` rules: token, quoted or RFC 5987 file names |
@@ -865,11 +865,11 @@ before and after.
 - Route patterns are the Express 4 style (`:id?`, `*`), not Express 5's
   `{/:id}` and `/*splat`.
 - Routing is case-sensitive by default, unlike Express; `"case sensitive
-  routing": false` covers every router, there is no per-router
-  `caseSensitive` option. There is no `"strict routing"` setting.
+  routing": false` and `"strict routing"` cover every router, there are no
+  per-router `caseSensitive` and `strict` options.
 - No several params in one segment, routers mounted on a RegExp, or mounting
   another app with `app.use(otherApp)`.
-- No `res.jsonp` or `req.param()`.
+- No `res.jsonp`.
 
 ## Background
 
@@ -902,7 +902,7 @@ several ideas changed on the way:
 
 The checklist of Express request and response methods from that time is now
 covered by the [package README](../packages/core/README.md), which documents
-every method; only `res.jsonp()` and `req.param()` were left out.
+every method.
 
 ### Planned write-ups
 

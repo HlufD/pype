@@ -671,14 +671,22 @@ function generateETag(
   body: string | Buffer,
   length = typeof body === "string" ? Buffer.byteLength(body) : body.length,
 ): string {
-  if (length === 0) return 'W/"0-2jmj7l5rSw0yVb/vlWAYkK/YBwk"';
+  return `W/${generateStrongETag(body, length)}`;
+}
+
+/** Strong ETag in the shape Express's `"etag": "strong"` setting generates: `"<size>-<hash>"`. */
+function generateStrongETag(
+  body: string | Buffer,
+  length = typeof body === "string" ? Buffer.byteLength(body) : body.length,
+): string {
+  if (length === 0) return '"0-2jmj7l5rSw0yVb/vlWAYkK/YBwk"';
 
   const hash = createHash("sha1")
     .update(body)
     .digest("base64")
     .substring(0, 27);
 
-  return `W/"${length.toString(16)}-${hash}"`;
+  return `"${length.toString(16)}-${hash}"`;
 }
 
 /** Percent-encodes a URL without double-encoding existing escapes. */
@@ -741,6 +749,7 @@ export {
   isPreconditionFailure,
   isRangeFresh,
   generateETag,
+  generateStrongETag,
   encodeUrl,
   escapeHtml,
   contentDisposition,

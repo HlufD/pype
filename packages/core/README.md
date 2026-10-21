@@ -158,8 +158,14 @@ Rules:
   default: `/Users/:id` then matches `/users/Ada`, and the param keeps its
   case (`"Ada"`). Only the path text is compared ignoring case; RegExp paths
   follow their own `i` flag.
-- Duplicate slashes and a trailing slash are ignored: `//users//42/` matches
-  `/users/:id`.
+- Duplicate slashes are ignored: `//users//42` matches `/users/:id`. So is a
+  trailing slash, `/users/42/`, unless `app.set("strict routing", true)`: then
+  `/users/42/` only matches a route written with the slash, `/users/:id/`,
+  and a router's `"/"` route still answers its mount path with and without
+  the slash, like in Express.
+- A wildcard keeps a trailing slash in its value (`/files/a/` gives
+  `"a/"`), and also matches an empty rest: `/files/*` matches `/files/`,
+  where Express 5's `/files/*name` doesn't.
 - Parameter values are URL-decoded (`/users/a%20b` gives `"a b"`). A value
   with a malformed escape (`/users/%ZZ`) skips the route and passes a 400
   error (`Failed to decode param '%ZZ'`) to the next error middleware, like
@@ -640,7 +646,7 @@ Sends the response.
 It also:
 
 - sets `Content-Length`;
-- adds a weak `ETag` unless the `etag` setting is `false` or an `ETag` is
+- adds an `ETag` as the `etag` setting says (weak by default) unless one is
   already set. Hashing the body takes about 0.4 ms per MB (`npm run
   bench:etag`), so consider turning the setting off for very large bodies;
 - answers `304 Not Modified` when the client's cached copy is fresh;
@@ -976,9 +982,12 @@ Set with `app.set(name, value)`, `new Pype({ name: value })`, `app.enable` or
 | -------------------- | ---------------------------------------- | ----------- |
 | `"env"`              | `process.env.NODE_ENV` or `"development"` | Errors aren't logged by the final handler when this is `"test"`. |
 | `"trust proxy"`      | `false`                                  | Which proxies' `X-Forwarded-*` headers to trust; see below. |
-| `"etag"`             | `true`                                   | Generate `ETag` headers in `res.send()`. |
+| `"etag"`             | `"weak"`                                 | `ETag` headers of `res.send()`: `"weak"` or `true`, `"strong"`, `false` for none, or a function `(body, encoding) => etag`, which gets the body as a `Buffer`. |
 | `"json spaces"`      | `undefined`                              | Indentation for `res.json()`. |
 | `"json replacer"`    | `undefined`                              | `JSON.stringify` replacer for `res.json()`. |
+| `"json escape"`      | `undefined`                              | `true` escapes `<`, `>` and `&` in `res.json()` as `\u003c`, `\u003e` and `\u0026`, so JSON embedded in HTML can't close a `<script>` tag. |
+| `"x-powered-by"`     | `false`                                  | `true` adds `X-Powered-By: Pype` to every response. Express turns it on by default. |
+| `"strict routing"`   | `false`                                  | `true` makes a trailing slash part of the path: `/users/` and `/users` are different routes. Applies to every router in the app. |
 | `"subdomain offset"` | `2`                                      | Number of dot-separated parts removed from the end of the host name for `req.subdomains`. |
 | `"case sensitive routing"` | `true`                             | `false` matches route and mount paths ignoring ASCII case, like Express's default. Applies to every router in the app. |
 | `"query parser"`     | `"simple"`                               | How `req.query` is parsed: `"simple"` (Node's `querystring`), `"extended"` (`qs` rules: nested objects and arrays), `false` (no parsing) or a function `(query) => object`, which gets `null` without a `?`. |
@@ -1209,16 +1218,23 @@ Compatibility at a glance:
 | Route matching | Most specific route wins, not the first registered |
 | Route syntax | Express 4 style `:id?` and `*`, not Express 5's `{/:id}` and `*name` |
 | Case sensitivity | Case-sensitive by default; `"case sensitive routing": false` for Express's default |
-| Duplicate and trailing slashes | Always ignored |
+| Duplicate slashes | Always ignored |
+| Trailing slashes | Same, ignored unless `"strict routing"` |
+| `"etag"`, `"json escape"`, `"json spaces"`, `"json replacer"` | Same values and results |
+| `"x-powered-by"` | Off by default |
 | Default 404 and error responses | JSON instead of HTML |
-| `res.jsonp()`, `req.param()`, `app.use(otherApp)` | Not implemented |
+| `res.jsonp()`, `app.use(otherApp)` | Not implemented |
 
 Differences:
 
 - When several patterns match a URL, the most specific wins (static, then
   `:param`, then `*`) instead of the first registered. Routes with the same
   method and path still run in registration order.
-- Duplicate and trailing slashes are always ignored.
+- Duplicate slashes are always ignored.
+- No `X-Powered-By` header unless the `"x-powered-by"` setting is on; Express
+  sends `X-Powered-By: Express` by default.
+- `"strict routing"` covers every router in the app, there is no per-router
+  `strict` option.
 - Routing is case-sensitive unless `"case sensitive routing"` is `false`;
   Express ignores case by default. The setting covers every router in the
   app, there is no per-router `caseSensitive` option.
@@ -1231,10 +1247,9 @@ Differences:
   routes and middleware work.
 - Optional parameters and wildcards use the Express 4 syntax: `/:id?` and
   `/files/*` (`req.params["*"]`), where Express 5 uses `{/:id}` and
-  `/*name`.
+  `/*name`. The `*` also matches an empty rest.
 - Not implemented: several parameters in one segment (`/:from-:to`, which
-  throws), mounting another app with `app.use(otherApp)`, `res.jsonp()`,
-  `req.param()`, and the `"strict routing"` and `"x-powered-by"` settings.
+  throws), mounting another app with `app.use(otherApp)` and `res.jsonp()`.
 
 ## Production notes
 

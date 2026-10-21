@@ -77,6 +77,9 @@ class HttpError extends Error {
   }
 }
 
+/** Replacements of the `"json escape"` setting. */
+const JSON_ESCAPES: Record<string, string> = { "<": "\\u003c", ">": "\\u003e", "&": "\\u0026" };
+
 /** A `Vary` field name (RFC 7230 token). */
 const FIELD_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
@@ -152,8 +155,11 @@ export class Response extends ServerResponse<Request> {
         typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.length;
       this.setHeader("Content-Length", length);
 
-      if (this.app?.settings.etag !== false && !this.hasHeader("ETag")) {
-        this.setHeader("ETag", generateETag(chunk, length));
+      // The app's "etag fn"; a response of no app gets weak ETags.
+      const etagFn = this.app ? this.app.settings["etag fn"] : generateETag;
+      if (typeof etagFn === "function" && !this.hasHeader("ETag")) {
+        const etag = etagFn(chunk);
+        if (etag) this.setHeader("ETag", etag);
       }
     }
 
@@ -179,19 +185,27 @@ export class Response extends ServerResponse<Request> {
   }
 
   /**
-   * Sends any JSON value, using the app's `"json replacer"` and
-   * `"json spaces"` settings.
+   * Sends any JSON value, using the app's `"json replacer"`, `"json spaces"`
+   * and `"json escape"` settings.
    */
   json(data: any): this {
     if (!this.hasHeader("Content-Type"))
       this.setHeader("Content-Type", "application/json; charset=utf-8");
 
-    const body = JSON.stringify(
-      data,
-      this.app?.settings["json replacer"],
-      this.app?.settings["json spaces"],
-    );
+    const body = this.stringify(data);
     return this.send(body === undefined ? "" : body);
+  }
+
+  /**
+   * `JSON.stringify` with the app's JSON settings. With `"json escape"`,
+   * `<`, `>` and `&` become `\u003c`, `\u003e` and `\u0026`, so the JSON
+   * can't close a `<script>` tag it is embedded in, like Express 5.
+   */
+  private stringify(data: any): string | undefined {
+    const settings = this.app?.settings;
+    const json = JSON.stringify(data, settings?.["json replacer"], settings?.["json spaces"]);
+    if (!settings?.["json escape"] || json === undefined) return json;
+    return json.replace(/[<>&]/g, (char) => JSON_ESCAPES[char]);
   }
 
   /** Reads a response header. */

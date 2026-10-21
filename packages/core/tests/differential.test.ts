@@ -700,6 +700,67 @@ describe("routing and params match Express", () => {
     it.each(["/only-put", "/Only-Put", "/ONLY-PUT"])("OPTIONS %s", (path) => same(path, { method: "OPTIONS" }, pair));
   });
 
+  describe.each([false, true])("strict routing: %s", (strict) => {
+    let pair: Pair;
+
+    beforeAll(async () => {
+      pair = await startPair(
+        (app, kind) => {
+          const k = kit(kind);
+          // Express's routers have their own option, Pype's setting covers every router.
+          const router = k.Router({ strict });
+          const reply = (where: string) => (req: any, res: any) =>
+            res.json({ where, params: req.params, baseUrl: req.baseUrl, path: req.path, url: req.url });
+          app.get("/plain", reply("plain"));
+          app.get("/slash/", reply("slash"));
+          app.get("/users/:id", reply("user"));
+          app.get(kind === "express" ? "/files/*rest" : "/files/*", (req: any, res: any) =>
+            res.json({ rest: [req.params.rest ?? req.params["*"]].flat().join("/") }),
+          );
+          app.use("/mw", (req: any, res: any, next: any) => (req.query.stop ? res.json({ mw: req.url, baseUrl: req.baseUrl }) : next()));
+          router.get("/", reply("router root"));
+          router.get("/x", reply("router x"));
+          router.get("/y/", reply("router y/"));
+          app.use("/api", router);
+          app.get("/api", reply("app /api after the router"));
+          app.use((req: any, res: any) => res.status(404).json({ notFound: req.path }));
+        },
+        { "strict routing": strict },
+      );
+    });
+
+    afterAll(() => Promise.all([pair.express.close(), pair.pype.close()]));
+
+    it.each([
+      "/plain",
+      "/plain/",
+      "/slash",
+      "/slash/",
+      "/users/7",
+      "/users/7/",
+      "/files/a/b/",
+      ...(strict ? [] : ["/files/"]),
+      "/mw?stop=1",
+      "/mw/?stop=1",
+      "/mw/a/?stop=1",
+      "/api",
+      "/api/",
+      "/api/x",
+      "/api/x/",
+      "/api/y",
+      "/api/y/",
+      "/",
+    ])("GET %s", (path) => same(path, {}, pair));
+
+    it.each(["/plain", "/plain/", "/api", "/api/", "/api/x/"])("OPTIONS %s", (path) => same(path, { method: "OPTIONS" }, pair));
+
+    it.skipIf(!strict)("Pype's * also matches an empty rest, Express 5's *name doesn't", async () => {
+      const [fromExpress, fromPype] = await both("/files/", {}, pair);
+      expect(fromExpress.status).toBe(404);
+      expect(JSON.parse(fromPype.text)).toEqual({ rest: "" });
+    });
+  });
+
   it.each(["POST", "PUT", "OPTIONS", "HEAD"])("a param that fails to decode answers 400 for %s too", async (method) => {
     for (const path of ["/params/%ZZ", "/params/%", "/params/%E0%A4%A", "/params/a%20b"]) await same(path, { method });
   });
@@ -973,6 +1034,42 @@ describe("body parser edge cases match Express", () => {
   });
 });
 
+describe("etag and json settings match Express", () => {
+  const body = { html: "<script>alert('&')</script>", n: 1 };
+  const define = (app: any) => {
+    app.get("/text", (_req: any, res: any) => res.send("hello world"));
+    app.get("/empty", (_req: any, res: any) => res.send(""));
+    app.get("/buffer", (_req: any, res: any) => res.send(Buffer.from("bytes")));
+    app.get("/json", (_req: any, res: any) => res.json(body));
+    app.get("/setting", (_req: any, res: any) => res.json({ etag: app.get("etag"), escape: app.get("json escape") ?? null }));
+  };
+
+  it.each<[string, Record<string, unknown>]>([
+    ["defaults", {}],
+    ["etag strong", { etag: "strong" }],
+    ["etag weak", { etag: "weak" }],
+    ["etag true", { etag: true }],
+    ["etag false", { etag: false }],
+    ["etag function", { etag: (chunk: string | Buffer, encoding?: string) => `"custom-${Buffer.byteLength(chunk)}-${encoding ?? "buffer"}"` }],
+    ["json escape", { "json escape": true }],
+    ["json escape with spaces and a replacer", { "json escape": true, "json spaces": 2, "json replacer": (k: string, v: unknown) => (k === "n" ? undefined : v) }],
+  ])("%s", async (_name, settings) => {
+    const pair = await startPair(define, settings);
+    try {
+      for (const path of ["/text", "/empty", "/buffer", "/json", "/setting"]) await same(path, {}, pair);
+      const etag = (await pair.express.send("/text")).headers.etag as string | undefined;
+      if (etag) await same("/text", { headers: { "If-None-Match": etag } }, pair);
+    } finally {
+      await Promise.all([pair.express.close(), pair.pype.close()]);
+    }
+  });
+
+  it("rejects an unknown etag value like Express", () => {
+    expect(() => express().set("etag", "medium")).toThrow("unknown value for etag function: medium");
+    expect(() => new Pype().set("etag", "medium")).toThrow("unknown value for etag function: medium");
+  });
+});
+
 describe("every HTTP method matches Express", () => {
   let pair: Pair;
   const methods = ["PURGE", "PROPFIND", "SEARCH", "TRACE", "QUERY", "LOCK", "MKCOL", "M-SEARCH", "REPORT"];
@@ -1137,6 +1234,18 @@ describe("trust proxy matches Express", () => {
 });
 
 describe("documented differences from Express", () => {
+  it("Pype sends X-Powered-By only when the setting is on", async () => {
+    for (const settings of [{}, { "x-powered-by": true }, { "x-powered-by": false }]) {
+      const pair = await startPair((app) => app.get("/", (_req: any, res: any) => res.send("ok")), settings);
+      const [fromExpress, fromPype] = await both("/", {}, pair);
+      await Promise.all([pair.express.close(), pair.pype.close()]);
+
+      const on = (settings as any)["x-powered-by"];
+      expect(fromExpress.headers["x-powered-by"]).toBe(on === false ? undefined : "Express");
+      expect(fromPype.headers["x-powered-by"]).toBe(on === true ? "Pype" : undefined);
+    }
+  });
+
   // Each of these is listed under "Differences" in the README. The test
   // fails if the behaviour changes, so the README can be updated with it.
 

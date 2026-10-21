@@ -23,7 +23,7 @@ import {
 import { AnyHandler, ErrorMiddleware, Middleware } from "../types/middleware";
 import { Request } from "./request";
 import { Response } from "./response";
-import { parseQuery } from "../utils/helpers";
+import { generateETag, generateStrongETag, parseQuery } from "../utils/helpers";
 import { parseQs } from "../utils/qs";
 import { compileTrust } from "../utils/trust-proxy";
 import { resolve } from "path";
@@ -77,6 +77,8 @@ export class Pype {
   private compiledVersion = -1;
   /** The `"case sensitive routing"` setting the routing table was built with. */
   private caseSensitive = true;
+  /** The `"strict routing"` setting the routing table was built with. */
+  private strict = false;
   /** Methods that have routes in the tree, the only ones worth looking up for another method. */
   private routedMethods: string[] = [];
 
@@ -85,12 +87,15 @@ export class Pype {
    */
   constructor(settings: Settings = {}) {
     this.set("env", process.env.NODE_ENV || "development");
-    this.set("etag", true);
+    this.set("etag", "weak");
+    // Unlike Express, no X-Powered-By header unless this is turned on.
+    this.set("x-powered-by", false);
     this.set("trust proxy", false);
     this.set("query parser", "simple");
     this.set("subdomain offset", 2);
     // Unlike Express, matching is case-sensitive unless this is turned off.
     this.set("case sensitive routing", true);
+    this.set("strict routing", false);
     this.set("json spaces", undefined);
     this.set("json replacer", undefined);
     this.set("view", View);
@@ -122,6 +127,8 @@ export class Pype {
    */
   set(name: string, value: any): this {
     this.settings[name] = value;
+    if (name === "etag")
+      this.settings["etag fn"] = compileETag(value);
     if (name === "trust proxy")
       this.settings["trust proxy fn"] = compileTrust(value);
     if (name === "query parser")
@@ -414,10 +421,13 @@ export class Pype {
    */
   private compile() {
     const caseSensitive = this.enabled("case sensitive routing");
-    if (this.compiledVersion === routingVersion() && this.caseSensitive === caseSensitive) return;
+    const strict = this.enabled("strict routing");
+    if (this.compiledVersion === routingVersion() && this.caseSensitive === caseSensitive && this.strict === strict) {
+      return;
+    }
 
     const layers = this.router.compile();
-    const routes = createRouteTable(caseSensitive);
+    const routes = createRouteTable(caseSensitive, strict);
     const routeLayers = new Map<AnyHandler[], RouteLayer[]>();
     const entries = new Map<string, AnyHandler[]>();
 
@@ -425,24 +435,32 @@ export class Pype {
       // Regular expression routes are matched in the pipeline, not the tree.
       if (layer.kind !== "route" || layer.pattern) continue;
 
+      // With strict routing, a router's "/" route answers its mount path
+      // with and without the trailing slash, like in Express: the router
+      // sees "/" for both.
+      const paths = strict && layer.baseUrl && layer.fullPath === `${layer.baseUrl}/` ? [layer.fullPath, layer.baseUrl] : [layer.fullPath];
+
       for (const method of layer.methods) {
-        // Paths that only differ in case share an entry when case is ignored.
-        const path = normalizeBase(layer.fullPath) || "/";
-        const key = `${method} ${caseSensitive ? path : lowerAscii(path)}`;
-        const existing = entries.get(key);
+        for (const fullPath of paths) {
+          // Paths that only differ in case share an entry when case is
+          // ignored, and in a trailing slash unless routing is strict.
+          const path = strict ? fullPath.replace(/\/{2,}/g, "/") : normalizeBase(fullPath) || "/";
+          const key = `${method} ${caseSensitive ? path : lowerAscii(path)}`;
+          const existing = entries.get(key);
 
-        if (existing) {
-          routeLayers.get(existing)!.push(layer);
-          continue;
+          if (existing) {
+            routeLayers.get(existing)!.push(layer);
+            continue;
+          }
+
+          const entry: AnyHandler[] = [];
+          entries.set(key, entry);
+          routeLayers.set(entry, [layer]);
+          routes.register(fullPath, method, entry as RouteHandler[], {
+            path: layer.fullPath,
+            baseUrl: layer.baseUrl,
+          });
         }
-
-        const entry: AnyHandler[] = [];
-        entries.set(key, entry);
-        routeLayers.set(entry, [layer]);
-        routes.register(layer.fullPath, method, entry as RouteHandler[], {
-          path: layer.fullPath,
-          baseUrl: layer.baseUrl,
-        });
       }
     }
 
@@ -458,6 +476,7 @@ export class Pype {
     this.fixedLayers = this.fixedIndices.map((index) => layers[index]);
     this.compiledVersion = routingVersion();
     this.caseSensitive = caseSensitive;
+    this.strict = strict;
   }
 
   /**
@@ -689,6 +708,7 @@ export class Pype {
     req.baseUrl = "";
     req.params = {};
     res.locals = res.locals || {};
+    if (this.settings["x-powered-by"]) res.setHeader("X-Powered-By", "Pype");
 
     return { req, res };
   }
@@ -884,11 +904,11 @@ for (const method of METHODS) {
   });
 }
 
-/** Creates the route trie with Express's slash handling. */
-function createRouteTable(caseSensitive = true) {
+/** Creates the route trie with Express's slash handling; a trailing slash counts with strict routing. */
+function createRouteTable(caseSensitive = true, strict = false) {
   return new RouteNode({
     ignoreDuplicateSlashes: true,
-    ignoreTrailingSlash: true,
+    ignoreTrailingSlash: !strict,
     caseSensitive,
   });
 }
@@ -1097,6 +1117,35 @@ function routeMatchesPath(layer: RouteLayer, path: string, treeLayers: Set<Route
 function handlesMethod(layer: RouteLayer, method: string) {
   if (layer.methods.includes(method)) return true;
   return method === HTTP_METHODS.HEAD && layer.methods.includes(HTTP_METHODS.GET);
+}
+
+/** Makes the `ETag` of a `res.send()` body, `undefined` for none. */
+type ETagFunction = (body: string | Buffer) => string | undefined;
+
+/**
+ * Compiles an Express `"etag"` setting: `true` or `"weak"` for weak ETags,
+ * `"strong"` for strong ones, `false` for none, or a function
+ * `(body, encoding) => etag`.
+ *
+ * @throws When the value is none of those.
+ */
+function compileETag(value: unknown): ETagFunction | undefined {
+  if (typeof value === "function") {
+    // Like Express, a custom function always gets the body as a Buffer.
+    const custom = value as (body: Buffer, encoding?: BufferEncoding) => string | undefined;
+    return (body) => custom(typeof body === "string" ? Buffer.from(body) : body, undefined);
+  }
+  switch (value) {
+    case true:
+    case "weak":
+      return (body) => generateETag(body);
+    case "strong":
+      return (body) => generateStrongETag(body);
+    case false:
+      return undefined;
+    default:
+      throw new TypeError(`unknown value for etag function: ${value}`);
+  }
 }
 
 /** Parses `req.query` from the text after `?`, `null` without a `?`. */

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { sign } from "cookie-signature";
+import { createHash } from "crypto";
 import {
   contentDisposition,
   contentType,
@@ -198,6 +199,19 @@ describe("isFresh", () => {
 });
 
 describe("other helpers", () => {
+  it("generateETag gives the SHA-1 ETag every time, cached or not", () => {
+    const expected = (body: string) =>
+      `W/"${Buffer.byteLength(body).toString(16)}-${createHash("sha1").update(body).digest("base64").substring(0, 27)}"`;
+    // Enough bodies to fill the cache and clear it, each asked twice.
+    for (let i = 0; i < 2500; i++) {
+      const body = JSON.stringify({ i, text: "é".repeat(i % 7) });
+      expect(generateETag(body)).toBe(expected(body));
+      expect(generateETag(body)).toBe(expected(body));
+    }
+    const large = "x".repeat(5000);
+    expect(generateETag(large)).toBe(expected(large));
+  });
+
   it("generateETag handles empty bodies and buffers", () => {
     expect(generateETag("")).toBe('W/"0-2jmj7l5rSw0yVb/vlWAYkK/YBwk"');
     expect(generateETag(Buffer.from("abc"))).toBe(generateETag("abc"));

@@ -685,8 +685,10 @@ export class Pype {
       optionsMethods = method === HTTP_METHODS.OPTIONS ? (optionsMethods ?? new Map()) : null;
       pathLayers = optionsMethods ? this.routeLayersFor(req.path) : null;
       matchedLayers = optionsMethods ? new Set<Layer>(matched) : null;
-      const candidates = new Set([...matched, ...(pathLayers ?? []), ...(decodeErrors?.keys() ?? [])]);
-      layers = this.dispatchOrder([...candidates]);
+      // Usually only the matched routes: no Set or copies needed then.
+      const candidates =
+        pathLayers || decodeErrors ? [...new Set([...matched, ...(pathLayers ?? []), ...(decodeErrors?.keys() ?? [])])] : matched;
+      layers = this.dispatchOrder(candidates);
 
       index = 0;
       if (current) {
@@ -857,6 +859,8 @@ export class Pype {
    */
   private dispatchOrder(routeLayers: RouteLayer[]): Layer[] {
     if (routeLayers.length === 0) return this.fixedLayers;
+    // Without middleware or RegExp routes, the matched routes are the order.
+    if (this.fixedIndices.length === 0 && routeLayers.length === 1) return routeLayers;
 
     const routeIndices = routeLayers.map((layer) => this.layerIndex.get(layer)!).sort((a, b) => a - b);
     const fixed = this.fixedIndices;
@@ -1035,6 +1039,13 @@ export class Pype {
     getParamCalls: () => Map<PypeRouter, Record<string, ParamCall>>,
     done: (err?: any) => void,
   ) {
+    // Most layers have no params to look up and no callbacks to run.
+    const router = layer.routers[layer.routers.length - 1];
+    if (!this.hostsRouter && (keys.length === 0 || !router.hasParams) && layer.mounts.every((scope) => scope.keys.length === 0)) {
+      req.params = router.mergeParams && layer.mounts.length > 0 ? { ...params } : params;
+      return done();
+    }
+
     const runCallbacks = (router: PypeRouter, names: string[], next: (err?: any) => void) => {
       if (names.length === 0 || !router.hasParams) return next();
       const paramCalls = getParamCalls();
@@ -1064,7 +1075,6 @@ export class Pype {
         req.params = parent = mergeParams(scope.router.mergeParams, own, parent);
         return runCallbacks(scope.router, scope.keys, enter);
       }
-      const router = layer.routers[layer.routers.length - 1];
       req.params = mergeParams(router.mergeParams, params, parent);
       runCallbacks(router, keys, done);
     };
@@ -1431,6 +1441,7 @@ function errorStatus(err: any): number {
 
 /** Collapses repeated slashes and drops trailing ones. */
 function normalizeBase(base: string) {
+  if (base === "") return base;
   return base.replace(/\/{2,}/g, "/").replace(/\/+$/, "");
 }
 
@@ -1594,6 +1605,8 @@ function queryOf(url: string) {
 
 /** Strips `base` from the front of `req.url` and `req.path` and appends it to `req.baseUrl`. */
 function mount(req: Request, base: string, caseSensitive: CaseSensitivity = true) {
+  // Layers of the app itself are mounted nowhere.
+  if (base === "") return;
   const prefix = matchedPrefix(req.path, base, caseSensitive) ?? normalizeBase(base);
   if (!prefix) return;
 

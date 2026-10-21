@@ -144,8 +144,11 @@ export class Response extends ServerResponse<Request> {
 
     if (typeof body === "string") {
       const type = this.get("Content-Type");
-      if (typeof type === "string") this.setHeader("Content-Type", setCharset(type, "utf-8"));
-      else this.type("html");
+      if (typeof type === "string") {
+        // res.json() already set it with the charset: no second setHeader().
+        const withCharset = setCharset(type, "utf-8");
+        if (withCharset !== type) this.setHeader("Content-Type", withCharset);
+      } else this.type("html");
       chunk = body;
     } else if (Buffer.isBuffer(body) || ArrayBuffer.isView(body)) {
       if (!this.get("Content-Type"))
@@ -248,7 +251,10 @@ export class Response extends ServerResponse<Request> {
    */
   private stringify(data: any): string | undefined {
     const settings = this.app?.settings;
-    const json = JSON.stringify(data, settings?.["json replacer"], settings?.["json spaces"]);
+    const replacer = settings?.["json replacer"];
+    const spaces = settings?.["json spaces"];
+    // Like Express: V8 is faster when JSON.stringify gets only the value.
+    const json = replacer || spaces ? JSON.stringify(data, replacer, spaces) : JSON.stringify(data);
     if (!settings?.["json escape"] || json === undefined) return json;
     return json.replace(/[<>&]/g, (char) => JSON_ESCAPES[char]);
   }

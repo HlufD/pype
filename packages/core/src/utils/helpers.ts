@@ -1,4 +1,4 @@
-import { createHash, createHmac } from "crypto";
+import { createHmac, hash as oneShotHash } from "crypto";
 import { IncomingHttpHeaders, OutgoingHttpHeaders } from "http";
 import { CookieOptions } from "../types/cookie-options";
 import { parse } from "querystring";
@@ -685,13 +685,32 @@ function generateStrongETag(
 ): string {
   if (length === 0) return '"0-2jmj7l5rSw0yVb/vlWAYkK/YBwk"';
 
-  const hash = createHash("sha1")
-    .update(body)
-    .digest("base64")
-    .substring(0, 27);
+  // Small bodies repeat (the same JSON for every request), so their ETags
+  // are kept: a cache hit is a string lookup instead of a SHA-1.
+  const cacheable = typeof body === "string" && body.length <= ETAG_CACHE_BODY;
+  if (cacheable) {
+    const cached = etagCache.get(body);
+    if (cached !== undefined) return cached;
+  }
 
-  return `"${length.toString(16)}-${hash}"`;
+  // The one-shot hash: the same digest without a Hash object per response.
+  const etag = `"${length.toString(16)}-${oneShotHash("sha1", body, "base64").substring(0, 27)}"`;
+
+  if (cacheable) {
+    if (etagCache.size >= ETAG_CACHE_SIZE) etagCache.clear();
+    etagCache.set(body, etag);
+  }
+  return etag;
 }
+
+/** Largest string body whose ETag is cached, in characters. */
+const ETAG_CACHE_BODY = 1024;
+
+/** Most cached ETags, about 1 MB of bodies at most. */
+const ETAG_CACHE_SIZE = 1024;
+
+/** Strong ETags of small string bodies, see {@link generateStrongETag}. */
+const etagCache = new Map<string, string>();
 
 /** Units of the `ms` package's durations, in milliseconds. */
 const DURATION_UNITS: Record<string, number> = { y: 31557600000, w: 604800000, d: 86400000, h: 3600000, m: 60000, s: 1000, ms: 1 };

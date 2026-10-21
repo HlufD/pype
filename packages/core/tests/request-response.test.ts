@@ -458,6 +458,7 @@ describe("Response", () => {
 
     const invalid = await send("/file/hello.txt", { headers: { Range: "bytes=50-60" } });
     expect(invalid.status).toBe(416);
+    expect(invalid.headers["content-range"]).toBe("bytes */11");
   });
 
   it("res.sendFile() blocks traversal, dotfiles and missing files", async () => {

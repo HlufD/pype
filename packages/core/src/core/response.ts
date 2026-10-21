@@ -11,6 +11,8 @@ import {
   encodeUrl,
   escapeHtml,
   generateETag,
+  isPreconditionFailure,
+  isRangeFresh,
   lookupMime,
   parseTokenList,
   setCharset,
@@ -583,6 +585,10 @@ export class Response extends ServerResponse<Request> {
 
       this.setFileHeaders(resolved, stats, opts);
 
+      if (isPreconditionFailure(this.req.headers, this.getHeaders())) {
+        return done(new HttpError(412));
+      }
+
       if (this.req.fresh) {
         this.statusCode = 304;
         this.removeHeader("Content-Type");
@@ -594,12 +600,15 @@ export class Response extends ServerResponse<Request> {
       let start = 0;
       let end = Math.max(stats.size - 1, 0);
 
-      if (opts.acceptRanges !== false && stats.size > 0) {
+      // An outdated If-Range asks for the whole file, not a part of a newer one.
+      if (opts.acceptRanges !== false && isRangeFresh(this.req.headers, this.getHeaders())) {
         const ranges = this.req.range(stats.size, { combine: true });
 
         if (ranges === -1) {
-          this.set("Content-Range", `bytes */${stats.size}`);
-          return done(new HttpError(416));
+          // On the error too, like Express's send: error handlers reset the headers.
+          const headers = { "Content-Range": `bytes */${stats.size}` };
+          this.set(headers);
+          return done(Object.assign(new HttpError(416), { headers }));
         }
 
         if (Array.isArray(ranges) && ranges.type === "bytes" && ranges.length === 1) {

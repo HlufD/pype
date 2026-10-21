@@ -595,6 +595,61 @@ function isFresh(
   return Date.parse(lastModified) <= Date.parse(modifiedSince!);
 }
 
+/**
+ * Precondition check with the rules of Express's `send`: `If-Match` must
+ * list the response's ETag (or be `*`), otherwise `If-Unmodified-Since` must
+ * be a date no older than `Last-Modified`.
+ *
+ * @returns `true` when the request should fail with a 412.
+ */
+function isPreconditionFailure(
+  reqHeaders: IncomingHttpHeaders,
+  resHeaders: OutgoingHttpHeaders,
+): boolean {
+  const match = reqHeaders["if-match"];
+  if (match) {
+    const etag = resHeaders["etag"] as string | undefined;
+    return (
+      !etag ||
+      (match !== "*" &&
+        parseTokenList(match).every(
+          (tag) => tag !== etag && tag !== `W/${etag}` && `W/${tag}` !== etag,
+        ))
+    );
+  }
+
+  const unmodifiedSince = Date.parse(reqHeaders["if-unmodified-since"] ?? "");
+  if (!Number.isNaN(unmodifiedSince)) {
+    const lastModified = Date.parse((resHeaders["last-modified"] as string | undefined) ?? "");
+    return Number.isNaN(lastModified) || lastModified > unmodifiedSince;
+  }
+
+  return false;
+}
+
+/**
+ * `If-Range` check with the rules of Express's `send`: an ETag must be the
+ * response's, a date must be no older than `Last-Modified`.
+ *
+ * @returns `true` when a `Range` header may be honoured, `false` when the
+ * client's copy is outdated and needs the whole file.
+ */
+function isRangeFresh(
+  reqHeaders: IncomingHttpHeaders,
+  resHeaders: OutgoingHttpHeaders,
+): boolean {
+  const ifRange = reqHeaders["if-range"] as string | undefined;
+  if (!ifRange) return true;
+
+  if (ifRange.includes('"')) {
+    const etag = resHeaders["etag"] as string | undefined;
+    return Boolean(etag && ifRange.includes(etag));
+  }
+
+  const lastModified = resHeaders["last-modified"] as string | undefined;
+  return Date.parse(lastModified ?? "") <= Date.parse(ifRange);
+}
+
 /** Splits a `,`-separated header like `fresh` and `vary` do, trimming spaces. */
 function parseTokenList(header: string): string[] {
   return header.split(",").map((token) => token.trim());
@@ -677,6 +732,8 @@ export {
   matchContentType,
   parseRange,
   isFresh,
+  isPreconditionFailure,
+  isRangeFresh,
   generateETag,
   encodeUrl,
   escapeHtml,

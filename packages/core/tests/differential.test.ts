@@ -662,10 +662,36 @@ describe("files match Express", () => {
     (range) => same("/file/hello.txt", { headers: { Range: range } }),
   );
 
+  it.each(["bytes=0-0", "bytes=-1", "bytes=0-"])("GET /file/empty.txt with Range: %s", (range) =>
+    same("/file/empty.txt", { headers: { Range: range } }),
+  );
+
   it("HEAD and conditional GET of a file", async () => {
     await same("/file/hello.txt", { method: "HEAD" });
     const lastModified = (await servers.express.send("/file/hello.txt")).headers["last-modified"] as string;
     await same("/file/hello.txt", { headers: { "If-Modified-Since": lastModified } });
+  });
+
+  it("If-Match, If-Unmodified-Since and If-Range on a file", async () => {
+    const { etag, "last-modified": lastModified } = (await servers.express.send("/file/hello.txt")).headers;
+    const epoch = "Thu, 01 Jan 1970 00:00:00 GMT";
+    const range = { Range: "bytes=0-4" };
+    for (const headers of <Record<string, string>[]>[
+      { "If-Match": etag! },
+      { "If-Match": `"other", ${etag}` },
+      { "If-Match": '"other"' },
+      { "If-Match": "*" },
+      { "If-Unmodified-Since": lastModified! },
+      { "If-Unmodified-Since": epoch },
+      { "If-Unmodified-Since": "garbage" },
+      { ...range, "If-Range": etag! },
+      { ...range, "If-Range": '"other"' },
+      { ...range, "If-Range": lastModified! },
+      { ...range, "If-Range": epoch },
+      { ...range, "If-Range": "garbage" },
+    ]) {
+      await same("/file/hello.txt", { headers });
+    }
   });
 });
 

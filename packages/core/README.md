@@ -823,9 +823,11 @@ res.sendFile("/srv/reports/q3.pdf", (err) => {
   untrusted users can write to without other safeguards.
 - Sets `Content-Type` from the extension, `Content-Length`, `Last-Modified`,
   a weak `ETag`, `Cache-Control` and `Accept-Ranges`.
-- Answers 304 for fresh conditional requests and 206 for a single byte range
-  (416 when the range can't be satisfied). Requests for several ranges get the
-  whole file.
+- Answers 304 for fresh conditional requests, 412 when `If-Match` or
+  `If-Unmodified-Since` fails, and 206 for a single byte range (416 with
+  `Content-Range: bytes */<size>` when the range can't be satisfied).
+  Requests for several ranges, or with an `If-Range` that no longer matches,
+  get the whole file.
 - Without a callback, errors go to `next(err)` like in Express, so your error
   middleware sees them: an error with `status` (404 for missing files, 403,
   416, ...) and the file system `code`, such as `"ENOENT"`. Its message is the

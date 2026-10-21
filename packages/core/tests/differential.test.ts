@@ -1391,6 +1391,25 @@ describe("mounted apps match Express", () => {
   });
 });
 
+describe("res.send() with Transfer-Encoding matches Express", () => {
+  it.each(["/chunked-text", "/chunked-buffer", "/chunked-json"])("GET %s", async (path) => {
+    const pair = await startPair((app) => {
+      const chunked = (body: unknown) => (_req: any, res: any) => res.set("Transfer-Encoding", "chunked").send(body);
+      app.get("/chunked-text", chunked("hello"));
+      app.get("/chunked-buffer", chunked(Buffer.from("bytes")));
+      app.get("/chunked-json", chunked({ a: 1 }));
+    });
+    try {
+      await same(path, {}, pair);
+      const [, fromPype] = await both(path, {}, pair);
+      expect(fromPype.headers["content-length"]).toBeUndefined();
+      expect(fromPype.headers["transfer-encoding"]).toBe("chunked");
+    } finally {
+      await Promise.all([pair.express.close(), pair.pype.close()]);
+    }
+  });
+});
+
 describe("every HTTP method matches Express", () => {
   let pair: Pair;
   const methods = ["PURGE", "PROPFIND", "SEARCH", "TRACE", "QUERY", "LOCK", "MKCOL", "M-SEARCH", "REPORT"];

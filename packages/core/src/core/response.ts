@@ -153,7 +153,9 @@ export class Response extends ServerResponse<Request> {
     if (chunk !== undefined) {
       const length =
         typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.length;
-      this.setHeader("Content-Length", length);
+      // Like Express: a response can't have both, a Transfer-Encoding set by
+      // the app wins.
+      if (!this.hasHeader("Transfer-Encoding")) this.setHeader("Content-Length", length);
 
       // The app's "etag fn"; a response of no app gets weak ETags.
       const etagFn = this.app ? this.app.settings["etag fn"] : generateETag;

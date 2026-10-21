@@ -402,6 +402,8 @@ describe("content negotiation matches Express", () => {
     "items=0-5",
     "bytes=0-5abc",
     "bytes= 0 - 5 ",
+    "bytes=-5,5-99",
+    "bytes=500-600, 0-10, 550-700, 5-20",
   ])("req.range() with Range: %s", (range) => same("/range", { headers: { Range: range } }));
 });
 

@@ -162,12 +162,12 @@ describe("parseRange", () => {
     expect([...(parseRange(100, "bytes= 0 - 4 ") as any)]).toEqual([{ start: 0, end: 4 }]);
   });
 
-  it("combines overlapping and adjacent ranges", () => {
+  it("combines overlapping and adjacent ranges, in the order they were asked for", () => {
     const ranges = parseRange(100, "bytes=20-30, 0-10, 11-15, 25-40", { combine: true }) as any;
     expect(ranges.type).toBe("bytes");
     expect([...ranges]).toEqual([
-      { start: 0, end: 15 },
       { start: 20, end: 40 },
+      { start: 0, end: 15 },
     ]);
   });
 });

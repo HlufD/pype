@@ -539,21 +539,27 @@ function parsePosition(value: string) {
   return /^\d+$/.test(value) ? Number(value) : NaN;
 }
 
-/** Merges overlapping and adjacent ranges, sorted by start. */
+/**
+ * Merges overlapping and adjacent ranges. Like `range-parser`, the result
+ * keeps the order the client asked for: each merged range sits where the
+ * first of its parts was in the header.
+ */
 function combineRanges(ranges: Ranges): Ranges {
-  const sorted = [...ranges].sort((a, b) => a.start - b.start);
-  const combined = [] as unknown as Ranges;
-  combined.type = ranges.type;
+  const sorted = ranges.map((range, index) => ({ ...range, index })).sort((a, b) => a.start - b.start);
+  const merged: typeof sorted = [];
 
   for (const range of sorted) {
-    const last = combined[combined.length - 1];
+    const last = merged[merged.length - 1];
     if (last && range.start <= last.end + 1) {
       last.end = Math.max(last.end, range.end);
+      last.index = Math.min(last.index, range.index);
     } else {
-      combined.push({ ...range });
+      merged.push(range);
     }
   }
 
+  const combined = merged.sort((a, b) => a.index - b.index).map(({ start, end }) => ({ start, end })) as Ranges;
+  combined.type = ranges.type;
   return combined;
 }
 

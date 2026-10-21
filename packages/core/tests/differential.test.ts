@@ -1506,6 +1506,91 @@ describe("errors for invalid arguments match Express", () => {
   });
 });
 
+describe("routers called as functions match Express", () => {
+  let pair: Pair;
+  const swapped: Record<Kind, any> = { express: null, pype: null };
+
+  beforeAll(async () => {
+    pair = await startPair((app, kind) => {
+      const k = kit(kind);
+      app.locals.name = "app";
+      const reply = (where: string) => (req: any, res: any) =>
+        res.json({ where, params: req.params, url: req.url, baseUrl: req.baseUrl, app: req.app?.locals?.name });
+
+      const inRoute = k.Router();
+      inRoute.use((req: any, res: any, next: any) => {
+        res.setHeader("x-router-id", String(req.params.id));
+        next();
+      });
+      app.get(
+        "/user/:id",
+        (req: any, res: any, next: any) => {
+          res.setHeader("x-user-id", String(req.params.id));
+          next();
+        },
+        inRoute,
+        reply("after the router"),
+      );
+
+      const merging = k.Router({ mergeParams: true });
+      merging.get("/orgs/:org/:name", reply("merging"));
+      const plain = k.Router();
+      plain.get("/orgs/:org/:name", reply("plain"));
+      app.get("/orgs/:org/:name", (req: any, res: any, next: any) =>
+        (req.query.merge ? merging : plain)(req, res, next),
+      );
+
+      const falls = k.Router();
+      falls.get("/nothing-here", reply("never"));
+      falls.get("/boom", () => {
+        throw Object.assign(new Error("from the router"), { status: 418 });
+      });
+      app.use((req: any, res: any, next: any) => falls.handle(req, res, next));
+
+      swapped[kind] = k.Router();
+      swapped[kind].get("/swap", reply("first router"));
+      app.use((req: any, res: any, next: any) => swapped[kind](req, res, next));
+
+      const deep = k.Router();
+      for (let i = 0; i < 6000; i++) deep.use((_req: any, _res: any, next: any) => next());
+      deep.get("/deep-router", reply("deep router"));
+      app.use(deep);
+      for (let i = 0; i < 6000; i++) app.use("/deep-app", (_req: any, _res: any, next: any) => next());
+      app.get("/deep-app", reply("deep app"));
+      app.get("/deep-route", ...Array.from({ length: 6000 }, () => (_req: any, _res: any, next: any) => next()), reply("deep route"));
+
+      app.use((req: any, res: any) => res.status(404).json({ notFound: req.url, app: req.app?.locals?.name }));
+      app.use((err: any, req: any, res: any, _next: any) => res.status(err.status ?? 500).json({ error: err.message, app: req.app?.locals?.name }));
+    });
+  });
+
+  afterAll(() => Promise.all([pair.express.close(), pair.pype.close()]));
+
+  it.each(["/user/1", "/orgs/acme/tj", "/orgs/acme/tj?merge=1", "/nothing", "/boom", "/swap", "/deep-router", "/deep-app", "/deep-route"])(
+    "GET %s",
+    (path) => same(path, {}, pair),
+  );
+
+  it("uses the router it is given at each request", async () => {
+    for (const kind of ["express", "pype"] as Kind[]) {
+      swapped[kind] = kit(kind).Router();
+      swapped[kind].get("/swap", (_req: any, res: any) => res.send("second router"));
+    }
+    await same("/swap", {}, pair);
+    expect((await pair.pype.send("/swap")).text).toBe("second router");
+  });
+
+  it("is a function with the router's methods", () => {
+    for (const router of [express.Router(), new PypeRouter()] as any[]) {
+      expect(typeof router).toBe("function");
+      expect(typeof router.handle).toBe("function");
+      expect(typeof router.get).toBe("function");
+      expect(typeof router.use).toBe("function");
+    }
+    expect(new PypeRouter()).toBeInstanceOf(PypeRouter);
+  });
+});
+
 describe("every HTTP method matches Express", () => {
   let pair: Pair;
   const methods = ["PURGE", "PROPFIND", "SEARCH", "TRACE", "QUERY", "LOCK", "MKCOL", "M-SEARCH", "REPORT"];

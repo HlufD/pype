@@ -21,6 +21,7 @@ import {
   UseHandler,
   isPathArgument,
   routingVersion,
+  setRouterRunner,
 } from "./router";
 import { AnyHandler, ErrorMiddleware, Middleware } from "../types/middleware";
 import { NextFunction } from "../types/next-function";
@@ -81,6 +82,11 @@ export class Pype {
   readonly router = new PypeRouter();
   /** Settings that still have their default, which a mounted app may inherit instead. */
   private defaults = new Set<string>();
+  /**
+   * Runs a router called as a function, see {@link PypeRouter.handle}:
+   * leaves `req.app`, `res.app` and `req.query` alone.
+   */
+  private hostsRouter = false;
   private layers: Layer[] = [];
   private routes = createRouteTable();
   /** Trie entry to every route layer registered for that method and path. */
@@ -223,6 +229,7 @@ export class Pype {
    * @param handlers - Middleware functions, routers, or arrays of them.
    */
   use(...handlers: Array<Middleware | Middleware[]>): this;
+  use(path: PathParam, ...handlers: Array<Middleware | Middleware[]>): this;
   use(
     path: PathParam,
     ...handlers: Array<Middleware | Middleware[] | PypeRouter>
@@ -576,9 +583,17 @@ export class Pype {
    * path's methods, like Express.
    */
   private handle(rawReq: IncomingMessage, rawRes: ServerResponse, callback?: (err?: any) => void) {
+    // Like Express's router, a request without a URL is passed on untouched.
+    if (callback && !rawReq.url) return callback();
+
+    const incomingParams = this.hostsRouter ? (rawReq as Request).params : undefined;
     const { req, res, restore } = this.prepare(rawReq, rawRes, callback !== undefined);
+    const outerParams = this.hostsRouter ? callerParams.get(req) : undefined;
+    if (this.hostsRouter) callerParams.set(req, incomingParams);
+
     // With a callback, as a mounted app: what nothing handled goes back to it.
     const finish = (err?: any) => {
+      if (this.hostsRouter) callerParams.set(req, outerParams);
       if (!callback) return this.finalHandler(req, res, err);
       restore!();
       callback(err);
@@ -649,7 +664,15 @@ export class Pype {
       sendOptions(res, [...methods].sort().join(", "));
       return true;
     };
-    const next = (err?: any) => {
+    // Like Express, a long run of layers that call next() synchronously
+    // continues on the next tick now and then, so the stack can't overflow.
+    let sync = 0;
+
+    const next = (err?: any): void => {
+      if (++sync > 100) {
+        setImmediate(next, err);
+        return;
+      }
       if (req.url !== routedUrl || req.method !== routedMethod) {
         if (req.url !== routedUrl) {
           req.query = this.settings["query parser fn"](queryOf(req.url ?? "/"));
@@ -726,7 +749,9 @@ export class Pype {
 
           if (layer.group) (ranGroups ??= new Set()).add(layer.group);
           current = layer;
-          return this.runRoute(req, res, layer, params, method, getParamCalls, next);
+          this.runRoute(req, res, layer, params, method, getParamCalls, next);
+          sync = 0;
+          return;
         }
 
         const caseSensitive = layer.caseMask ?? this.caseSensitive;
@@ -751,7 +776,9 @@ export class Pype {
 
         if (layer.group) (ranGroups ??= new Set()).add(layer.group);
         current = layer;
-        return this.callMiddleware(req, res, layer, err, next, mounted, getParamCalls);
+        this.callMiddleware(req, res, layer, err, next, mounted, getParamCalls);
+        sync = 0;
+        return;
       }
 
       if (!err && routerDone(this.router)) return;
@@ -844,10 +871,13 @@ export class Pype {
     const path = rawPath.includes("//") ? rawPath.replace(/\/{2,}/g, "/") : rawPath;
     const parser = this.settings["query parser fn"];
     // Inside another Pype app, req.query is parsed again only with another parser.
-    const parseQuery = !mounted || !(saved!.app instanceof Pype) || saved!.app.settings["query parser fn"] !== parser;
+    const parseQuery =
+      !this.hostsRouter && (!mounted || !(saved!.app instanceof Pype) || saved!.app.settings["query parser fn"] !== parser);
 
-    req.app = this;
-    res.app = this;
+    if (!this.hostsRouter) {
+      req.app = this;
+      res.app = this;
+    }
     req.res = res;
     req.originalUrl = (mounted && req.originalUrl) || url;
     req.path = path;
@@ -856,7 +886,7 @@ export class Pype {
     req.baseUrl = (mounted && req.baseUrl) || "";
     req.params = {};
     res.locals = res.locals || {};
-    if (this.settings["x-powered-by"]) res.setHeader("X-Powered-By", "Pype");
+    if (this.settings["x-powered-by"] && !this.hostsRouter) res.setHeader("X-Powered-By", "Pype");
 
     const restore = saved
       ? () => {
@@ -941,7 +971,9 @@ export class Pype {
     };
 
     // Callbacks may change req.params, the next router down inherits that.
-    let parent: Record<string, string> | undefined;
+    // A router called as a function starts from the params it was called with.
+    const called = this.hostsRouter ? callerParams.get(req) : undefined;
+    let parent = typeof called === "object" && called !== null ? (called as Record<string, string>) : undefined;
     let level = 0;
     const enter = (error?: any): void => {
       if (error) return done(error);
@@ -993,13 +1025,21 @@ export class Pype {
     };
 
     let index = 0;
-    const routeNext = (error?: any) => {
+    let sync = 0;
+    const routeNext = (error?: any): void => {
       if (error === "route" || error === "router") return leave(error);
+      // See handle(): a long synchronous run goes on on the next tick.
+      if (++sync > 100) {
+        setImmediate(routeNext, error);
+        return;
+      }
 
       while (index < layer.handlers.length) {
         const handler = layer.handlers[index++];
         if (Boolean(error) !== (handler.length === 4)) continue;
-        return invoke(handler, error, req, res, once(routeNext));
+        invoke(handler, error, req, res, once(routeNext));
+        sync = 0;
+        return;
       }
 
       leave(error);
@@ -1048,6 +1088,32 @@ export class Pype {
 // Apps are functions, see the constructor: `app.call()` and
 // `app instanceof Function` work like with Express.
 Object.setPrototypeOf(Pype.prototype, Function.prototype);
+
+/** The params a router called as a function was called with, by request. */
+const callerParams = new WeakMap<object, unknown>();
+
+/** The hidden app that runs each router called as a function. */
+const routerHosts = new WeakMap<PypeRouter, Pype>();
+
+// A router called as a function runs in a hidden app of its own, with the
+// routing settings of the app the request is in.
+setRouterRunner((router, req, res, next) => {
+  let host = routerHosts.get(router);
+  if (!host) {
+    host = new Pype();
+    (host as any).hostsRouter = true;
+    // Its root passes the caller's params down to a mergeParams router.
+    (host.router as { mergeParams: boolean }).mergeParams = true;
+    host.use(router);
+    routerHosts.set(router, host);
+  }
+  const app = (req as Request).app;
+  if (app instanceof Pype) {
+    host.set("case sensitive routing", app.enabled("case sensitive routing"));
+    host.set("strict routing", app.enabled("strict routing"));
+  }
+  (host as any).handle(req, res, next);
+});
 
 // Like Express apps, apps are event emitters: `app.on("mount", parent => ...)`.
 for (const name of Object.getOwnPropertyNames(EventEmitter.prototype)) {
@@ -1471,7 +1537,7 @@ function pickParams(source: Record<string, string>, keys: string[]) {
  * a parent here only has named params: routers can't be mounted on a RegExp.
  */
 function mergeParams(enabled: boolean, params: Record<string, string>, parent?: Record<string, string>) {
-  return enabled && parent ? { ...parent, ...params } : params;
+  return enabled && typeof parent === "object" && parent !== null ? { ...parent, ...params } : params;
 }
 
 /**

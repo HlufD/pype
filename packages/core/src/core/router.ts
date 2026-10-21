@@ -1,3 +1,4 @@
+import type { IncomingMessage, ServerResponse } from "http";
 import { HTTP_METHODS, METHODS } from "../enums/methods.enum";
 import { AnyHandler, ErrorMiddleware, Middleware } from "../types/middleware";
 import { RouteHandler } from "../types/route-handler";
@@ -217,7 +218,21 @@ export class RouteBuilder {
   }
 }
 
-export interface PypeRouter extends ExtraRouteMethods<PypeRouter> {}
+/**
+ * Like an Express router, a router is middleware itself:
+ * `router(req, res, next)` runs it like `router.handle(req, res, next)`.
+ */
+export interface PypeRouter extends ExtraRouteMethods<PypeRouter> {
+  (req: IncomingMessage, res: ServerResponse, next?: (err?: any) => void): void;
+}
+
+/** Runs a router called as a function; set by the app module, which has the pipeline. */
+let runRouter: ((router: PypeRouter, req: IncomingMessage, res: ServerResponse, next?: (err?: any) => void) => void) | undefined;
+
+/** Sets how routers called as functions run, see {@link PypeRouter.handle}. */
+export function setRouterRunner(runner: typeof runRouter) {
+  runRouter = runner;
+}
 
 /**
  * Express-style router: middleware, routes and sub-routers run in the order
@@ -240,6 +255,26 @@ export class PypeRouter {
     this.mergeParams = Boolean(options.mergeParams);
     if (options.caseSensitive !== undefined) this.caseSensitive = Boolean(options.caseSensitive);
     if (options.strict !== undefined) this.strict = Boolean(options.strict);
+
+    // The router is a function, like Express's: it gets this object's
+    // fields and prototype, and the constructor returns it instead.
+    const router = function (req: IncomingMessage, res: ServerResponse, next?: (err?: any) => void) {
+      router.handle(req, res, next);
+    } as PypeRouter;
+    Object.setPrototypeOf(router, new.target.prototype);
+    Object.assign(router, this);
+    return router;
+  }
+
+  /**
+   * Runs a request through this router on its own, like Express's
+   * `router.handle()`: as middleware or a route handler (`app.get(path,
+   * router)`), or called directly. Without a `next`, what the router
+   * doesn't handle gets a 404. `req.app` stays the app it is in; with
+   * `mergeParams`, the router keeps the `req.params` it was called with.
+   */
+  handle(req: IncomingMessage, res: ServerResponse, next?: (err?: any) => void) {
+    runRouter!(this, req, res, next);
   }
 
   /** `param()` callbacks by parameter name. */
@@ -281,6 +316,7 @@ export class PypeRouter {
    * or a router is mounted on a regular expression.
    */
   use(...handlers: Array<Middleware | Middleware[]>): this;
+  use(path: PathParam, ...handlers: Array<Middleware | Middleware[]>): this;
   use(path: PathParam, ...handlers: Array<Middleware | Middleware[] | PypeRouter>): this;
   use(...handlers: ErrorMiddleware[]): this;
   use(path: PathParam, ...handlers: ErrorMiddleware[]): this;

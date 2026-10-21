@@ -529,6 +529,13 @@ files.get("/Readme/", show); // matches /readme/ and /README/, not /readme
 app.use("/files", files);    // matched by the app's settings
 ```
 
+Like an Express router, a router is middleware itself, a function
+`(req, res, next)`: use it as a route handler (`app.get("/user/:id", auth,
+router)`), call it from middleware (`router(req, res, next)` or
+`router.handle(req, res, next)`), or mount it in an Express app. `req.app`
+stays the app the request is in, and a `mergeParams` router keeps the
+`req.params` it was called with.
+
 `next("router")` inside a router skips the rest of that router and continues
 after it.
 

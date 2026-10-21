@@ -444,6 +444,12 @@ compiled once per path, and copy `i` of each layer shares a group. Mounting a
 router on a RegExp throws, since its layers' paths must be known when the
 tree is built. `param()` stores callbacks in `params` by name.
 
+Like apps, routers are functions: the constructor returns a function that
+calls `handle()`. Called that way, a router runs in a hidden app of its own
+(`setRouterRunner()` in `server.ts`, one host per router) that leaves
+`req.app` alone, follows the calling app's routing settings, and starts
+`req.params` from the params the router was called with.
+
 `routers` is the chain of routers a layer came from, outermost first. It is
 what lets `next("router")` know which layers to skip.
 

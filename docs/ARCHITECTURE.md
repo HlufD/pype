@@ -64,6 +64,7 @@ src/
     helpers.ts              negotiation, cookies, ranges, ETags, freshness, query parsing
     qs.ts                   port of the qs parser, for extended forms and queries
     trust-proxy.ts          "trust proxy" setting and X-Forwarded-For handling
+    path-pattern.ts         paths with several params in one segment, as RegExps
   middlewares/
     body-parser.ts          json(), urlencoded(), text(), raw()
   types/                    Middleware, ErrorMiddleware, NextFunction, CookieOptions, ...
@@ -402,7 +403,11 @@ interface RouterEndLayer { kind: "end"; router; routers }
 ```
 
 Paths can be strings, RegExps or arrays. Each element of an array becomes its
-own layer and they share a `group`. A router mounted on several paths is
+own layer and they share a `group`. A string with several params in one
+segment (`/:from-:to`) keeps its text in `pathPattern`; `Pype.compile()`
+turns it into `pattern` with the routing settings (`compilePathPattern()`,
+which builds the expression the way `path-to-regexp` does), so it is
+matched like a RegExp path, outside the tree. A router mounted on several paths is
 compiled once per path, and copy `i` of each layer shares a group. Mounting a
 router on a RegExp throws, since its layers' paths must be known when the
 tree is built. `param()` stores callbacks in `params` by name.
@@ -868,8 +873,8 @@ before and after.
 - Routing is case-sensitive by default, unlike Express; `"case sensitive
   routing": false` and `"strict routing"` cover every router, there are no
   per-router `caseSensitive` and `strict` options.
-- No several params in one segment, routers mounted on a RegExp, or mounting
-  another app with `app.use(otherApp)`.
+- No routers mounted on a RegExp or on a path with several params in one
+  segment, and no mounting another app with `app.use(otherApp)`.
 
 ## Background
 

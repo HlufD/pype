@@ -762,6 +762,86 @@ describe("routing and params match Express", () => {
     });
   });
 
+  describe.each<[string, Record<string, unknown>]>([
+    ["case-sensitive", { "case sensitive routing": true }],
+    ["ignoring case, strict", { "case sensitive routing": false, "strict routing": true }],
+  ])("several params in one segment, %s", (_name, settings) => {
+    let pair: Pair;
+
+    beforeAll(async () => {
+      pair = await startPair((app, kind) => {
+        const k = kit(kind);
+        const reply = (where: string) => (req: any, res: any) =>
+          res.json({ where, params: req.params, baseUrl: req.baseUrl, path: req.path, route: String(req.route?.path) });
+        app.get("/range/:from-:to", reply("range"));
+        app.get("/range/:id", reply("range id"));
+        app.get("/flights/:from.:to", reply("flights"));
+        app.get("/files/:name.:ext", reply("files"));
+        app.get("/user-:id/posts", reply("user posts"));
+        app.get("/v:major.:minor.:patch", reply("version"));
+        app.get("/Doc-:id", reply("doc"));
+        app.get("/first/:id", reply("first id"));
+        app.get("/first/:from-:to", reply("first range"));
+        // Express's routers have their own options, Pype's settings cover every router.
+        const router = k.Router({ caseSensitive: settings["case sensitive routing"], strict: settings["strict routing"] });
+        router.get("/:a-:b", reply("router pair"));
+        app.use("/r", router);
+        app.use("/t-:tenant", (req: any, res: any) => res.json({ tenant: req.params, baseUrl: req.baseUrl, url: req.url }));
+        app.use((err: any, _req: any, res: any, _next: any) => res.status(err.status ?? 500).json({ error: err.status }));
+        app.use((req: any, res: any) => res.status(404).json({ notFound: req.path }));
+      }, settings);
+    });
+
+    afterAll(() => Promise.all([pair.express.close(), pair.pype.close()]));
+
+    it.each([
+      "/range/1-5",
+      "/range/a-b-c",
+      "/range/-5",
+      "/range/5-",
+      "/range/5",
+      "/range/1-5/",
+      "/flights/LAX.JFK",
+      "/flights/LAX.JFK.SFO",
+      "/files/report.pdf",
+      "/files/archive.tar.gz",
+      "/files/noext",
+      "/user-42/posts",
+      "/USER-42/posts",
+      "/v1.2.3",
+      "/v1.2",
+      "/doc-7",
+      "/Doc-7",
+      "/first/1-5",
+      "/range/caf%C3%A9-%E2%82%AC",
+      "/range/a%20b-c",
+      "/range/%ZZ-1",
+      "/r/x-y",
+      "/r/x-y-z/",
+      "/t-acme/a/b",
+      "/t-acme",
+      "/t-/x",
+    ])("GET %s", (path) => same(path, {}, pair));
+
+    it.each(["/range/1-5", "/flights/LAX.JFK"])("OPTIONS and POST %s", async (path) => {
+      await same(path, { method: "OPTIONS" }, pair);
+      await same(path, { method: "POST" }, pair);
+    });
+  });
+
+  it("several params without text between them throw, like Express", async () => {
+    const app = new Pype({ env: "test" });
+    app.get("/:a:b", (_req: any, res: any) => res.end());
+    expect(() => express().get("/:a:b", () => {})).toThrow();
+    expect(() => app.listen(0)).toThrow(/Missing text before "b" param/);
+    expect(() => {
+      const other = new Pype({ env: "test" });
+      other.get("/a-:", (_req: any, res: any) => res.end());
+      other.listen(0);
+    }).toThrow(/Missing parameter name/);
+    expect(() => new PypeRouter().use("/:a-:b", new PypeRouter())).toThrow("several params in one segment");
+  });
+
   it.each(["POST", "PUT", "OPTIONS", "HEAD"])("a param that fails to decode answers 400 for %s too", async (method) => {
     for (const path of ["/params/%ZZ", "/params/%", "/params/%E0%A4%A", "/params/a%20b"]) await same(path, { method });
   });
@@ -1791,7 +1871,7 @@ describe("regular expression and array paths match Express", () => {
     "/after-route/9",
   ])("GET %s", (path) => same(path, {}, pair));
 
-  it.each(["/re/42", "/chain", "/one", "/routed/r-7"])("HEAD, POST, PUT and OPTIONS %s", async (path) => {
+  it.each(["/re/42", "/chain", "/one", "/routed/r-7", "/dec/%ZZ", "/dec/a%20b"])("HEAD, POST, PUT and OPTIONS %s", async (path) => {
     for (const method of ["HEAD", "POST", "PUT", "OPTIONS"]) await same(path, { method }, pair);
   });
 

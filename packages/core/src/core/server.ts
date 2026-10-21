@@ -26,6 +26,7 @@ import { Response } from "./response";
 import { generateETag, generateStrongETag, parseQuery } from "../utils/helpers";
 import { parseQs } from "../utils/qs";
 import { compileTrust } from "../utils/trust-proxy";
+import { compilePathPattern } from "../utils/path-pattern";
 import { resolve } from "path";
 import { Engine, View } from "./view";
 
@@ -429,6 +430,14 @@ export class Pype {
 
     const layers = this.router.compile();
     const routes = createRouteTable(caseSensitive, strict);
+
+    // Paths with several params in one segment are matched by patterns
+    // built with the routing settings, like RegExp paths, outside the tree.
+    for (const layer of layers) {
+      if (layer.kind !== "end" && layer.pathPattern) {
+        layer.pattern = compilePathPattern(layer.pathPattern, { caseSensitive, strict, end: layer.kind === "route" });
+      }
+    }
     const routeLayers = new Map<AnyHandler[], RouteLayer[]>();
     const entries = new Map<string, AnyHandler[]>();
 
@@ -580,15 +589,16 @@ export class Pype {
 
           let params: Record<string, string>;
           if (layer.pattern) {
-            if (!handlesMethod(layer, method)) continue;
             let found: PatternMatch | null;
             try {
-              found = matchPattern(layer.pattern, relativePath(req.path, layer.fullPath, this.caseSensitive));
+              const path = relativePath(req.path, layer.fullPath, this.caseSensitive);
+              found = matchPattern(layer.pattern, path, layer.pathPattern ? layer.keys : undefined);
             } catch (error) {
+              // Like Express, a param that fails to decode is a 400 for every method.
               err = error;
               continue;
             }
-            if (!found) continue;
+            if (!found || !handlesMethod(layer, method)) continue;
             params = found.params;
           } else {
             // Only matched route layers are in the order, plus, for OPTIONS,
@@ -607,7 +617,8 @@ export class Pype {
         let mounted: PatternMatch | null = null;
         try {
           if (layer.pattern) {
-            mounted = matchMount(layer.pattern, relativePath(req.path, layer.path, this.caseSensitive));
+            const path = relativePath(req.path, layer.path, this.caseSensitive);
+            mounted = matchMount(layer.pattern, path, layer.pathPattern ? layer.keys : undefined);
             if (!mounted) continue;
           } else if (layer.keys.length > 0) {
             mounted = { params: pickParams(mountParams(req.path, layer.path, this.caseSensitive), layer.keys), path: "" };
@@ -1063,13 +1074,13 @@ function keysOf(pattern: RegExp) {
  * Matches a regular expression route path like Express: params come from the
  * capture groups, URL-decoded, and groups that didn't take part are left out.
  *
+ * @param keys - The param name of each group; read from the pattern's source when omitted.
  * @throws A 400 error when a param has a malformed escape.
  */
-function matchPattern(pattern: RegExp, path: string): PatternMatch | null {
+function matchPattern(pattern: RegExp, path: string, keys: Array<string | number> = keysOf(pattern)): PatternMatch | null {
   const match = pattern.exec(path);
   if (!match) return null;
 
-  const keys = keysOf(pattern);
   const params: Record<string, string> = {};
   for (let i = 1; i < match.length; i++) {
     const value = decodeParam(match[i]);
@@ -1082,8 +1093,8 @@ function matchPattern(pattern: RegExp, path: string): PatternMatch | null {
  * Matches a regular expression mount path like Express: the match must start
  * the path and end at a `/` or the end of it.
  */
-function matchMount(pattern: RegExp, path: string): PatternMatch | null {
-  const match = matchPattern(pattern, path);
+function matchMount(pattern: RegExp, path: string, keys?: Array<string | number>): PatternMatch | null {
+  const match = matchPattern(pattern, path, keys);
   if (!match || !path.startsWith(match.path)) return null;
   const next = path[match.path.length];
   return next && next !== "/" ? null : match;

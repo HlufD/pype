@@ -149,10 +149,17 @@ error, the warning includes it, so it still shows up in your logs.
 Rules:
 
 - Paths must start with `/`. An optional parameter (`:name?`) and the
-  wildcard (`*`) are only allowed at the end. A `:param` always takes a whole
-  segment, and its name is made of letters, digits, `_` and `$` and doesn't
-  start with a digit. Other forms, like `/:from-:to`, `/a-:id` or `/:`, throw
+  wildcard (`*`) are only allowed at the end. A param name is made of
+  letters, digits, `_` and `$` and doesn't start with a digit; `/:` throws
   when the route is registered.
+- A segment can hold several params with text between them, like in
+  Express: `/range/:from-:to`, `/flights/:from.:to`, `/files/:name.:ext`,
+  `/user-:id`. A param takes anything but `/`, and one after another can't
+  contain the text just before it, so `/files/:name.:ext` gives
+  `{ name: "archive.tar", ext: "gz" }` for `/files/archive.tar.gz`. Such
+  routes are matched in registration order with the other layers, like
+  RegExp routes, not by specificity. Two params without text between them
+  (`/:a:b`) throw, and routers can't be mounted on such a path.
 - Matching is case-sensitive by default. Turn it off with
   `app.set("case sensitive routing", false)` to match like Express does by
   default: `/Users/:id` then matches `/users/Ada`, and the param keeps its
@@ -1259,8 +1266,7 @@ Differences:
 - Optional parameters and wildcards use the Express 4 syntax: `/:id?` and
   `/files/*` (`req.params["*"]`), where Express 5 uses `{/:id}` and
   `/*name`. The `*` also matches an empty rest.
-- Not implemented: several parameters in one segment (`/:from-:to`, which
-  throws) and mounting another app with `app.use(otherApp)`.
+- Not implemented: mounting another app with `app.use(otherApp)`.
 
 ## Production notes
 

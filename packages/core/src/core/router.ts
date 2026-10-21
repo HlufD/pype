@@ -1,6 +1,7 @@
 import { HTTP_METHODS, METHODS } from "../enums/methods.enum";
 import { AnyHandler, ErrorMiddleware, Middleware } from "../types/middleware";
 import { RouteHandler } from "../types/route-handler";
+import { hasMixedSegment, pathKeys } from "../utils/path-pattern";
 
 /** Anything `app.use()` and `router.use()` accept, arrays are flattened like Express. */
 export type UseHandler = Middleware | ErrorMiddleware | AnyHandler | PypeRouter | UseHandler[];
@@ -68,6 +69,8 @@ export interface MiddlewareLayer {
   path: string;
   /** A regular expression mount path, matched against the path below `path`. */
   pattern?: RegExp;
+  /** A string mount path with several params in a segment, compiled into `pattern` by the app. */
+  pathPattern?: string;
   /** Shared by the layers of one array mount path, so the middleware runs once per request. */
   group?: object;
   /** The middleware or error middleware. */
@@ -89,6 +92,8 @@ export interface RouteLayer {
   routePath: PathParam;
   /** A regular expression route path, matched against the path below `fullPath`. */
   pattern?: RegExp;
+  /** A string route path with several params in a segment, compiled into `pattern` by the app. */
+  pathPattern?: string;
   /** Shared by the layers of one array path, so the route runs once per request. */
   group?: object;
   /** Mount path of the route's router, exposed as `req.baseUrl`. */
@@ -273,6 +278,9 @@ export class PypeRouter {
         if ([path].flat().some((each) => each instanceof RegExp)) {
           throw new TypeError("Mounting a router on a regular expression is not supported");
         }
+        if ([path].flat().some((each) => typeof each === "string" && hasMixedSegment(each))) {
+          throw new TypeError("Mounting a router on a path with several params in one segment is not supported");
+        }
         flush();
         this.stack.push({ type: "router", path, router: handler });
       } else if (typeof handler === "function") {
@@ -429,24 +437,30 @@ export class PypeRouter {
       }
 
       for (const path of paths) {
+        // Like RegExp paths, a path with several params in one segment is
+        // matched below the router's mount path, by a pattern.
+        const pathPattern = typeof path === "string" && hasMixedSegment(path) ? path : undefined;
+        const below = path instanceof RegExp || pathPattern !== undefined;
+        const keys = path instanceof RegExp ? [] : pathPattern ? pathKeys(path) : paramKeys(path);
+
         if (entry.type === "use") {
-          const mount = path instanceof RegExp ? trimSlashes(basePath) : joinPaths(basePath, path);
+          const mount = below ? trimSlashes(basePath) : joinPaths(basePath, path as string);
           const pattern = path instanceof RegExp ? statelessPattern(path) : undefined;
           for (const handle of entry.handlers) {
-            const keys = path instanceof RegExp ? [] : paramKeys(path);
-            layers.push({ kind: "middleware", path: mount, pattern, handle, routers: chain, keys, mounts, group });
+            layers.push({ kind: "middleware", path: mount, pattern, pathPattern, handle, routers: chain, keys, mounts, group });
           }
         } else {
           layers.push({
             kind: "route",
-            fullPath: path instanceof RegExp ? trimSlashes(basePath) : joinPaths(basePath, path),
+            fullPath: below ? trimSlashes(basePath) : joinPaths(basePath, path as string),
             routePath: entry.path,
             pattern: path instanceof RegExp ? statelessPattern(path) : undefined,
+            pathPattern,
             baseUrl: trimSlashes(basePath),
             methods: entry.methods,
             handlers: [...entry.handlers],
             routers: chain,
-            keys: path instanceof RegExp ? [] : paramKeys(path),
+            keys,
             mounts,
             group,
           });

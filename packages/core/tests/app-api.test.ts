@@ -527,6 +527,24 @@ describe("the app as a request listener", () => {
     }
   });
 
+  it("gives requests on someone else's server the app's request and response prototypes", async () => {
+    const app = new Pype({ env: "test" });
+    (app.request as any).hello = () => "hi";
+    (app.response as any).wave = function (this: Response) {
+      return this.send("wave");
+    };
+    app.get("/", (req: any, res: any) => (req.hello() === "hi" ? res.wave() : res.send("no")));
+
+    const server = createServer(app).listen(0, "127.0.0.1");
+    await new Promise((resolve) => server.once("listening", resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      expect(await (await fetch(`http://127.0.0.1:${port}/`)).text()).toBe("wave");
+    } finally {
+      server.close();
+    }
+  });
+
   it("is a function and still a Pype instance, sharing state with app.handler", async () => {
     const app = new Pype({ env: "test" });
     expect(typeof app).toBe("function");

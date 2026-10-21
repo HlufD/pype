@@ -5,6 +5,8 @@ import { join } from "path";
 import express from "express";
 import cookieParser from "cookie-parser";
 import { Pype } from "../src/core/server";
+import { Request as PypeRequest } from "../src/core/request";
+import { Response as PypeResponse } from "../src/core/response";
 import { PypeRouter } from "../src/core/router";
 import { json, raw, text, urlencoded } from "../src/middlewares/body-parser";
 import { View } from "../src/core/view";
@@ -1588,6 +1590,57 @@ describe("routers called as functions match Express", () => {
       expect(typeof router.use).toBe("function");
     }
     expect(new PypeRouter()).toBeInstanceOf(PypeRouter);
+  });
+});
+
+describe("app.request and app.response match Express", () => {
+  let pair: Pair;
+
+  beforeAll(async () => {
+    pair = await startPair((app, kind) => {
+      const create = (): any => (kind === "express" ? express() : new Pype({ env: "test" }));
+      app.request.querystring = function (this: any) {
+        return this.url.split("?")[1] ?? "";
+      };
+      app.request.who = "parent";
+      app.response.shout = function (this: any, text: string) {
+        return this.send(`${text.toUpperCase()}!`);
+      };
+
+      const inherits = create();
+      inherits.get("/", (req: any, res: any) => res.shout(`${req.who} ${req.querystring()}`));
+      app.use("/inherits", inherits);
+
+      const overrides = create();
+      overrides.request.who = "child";
+      overrides.response.shout = function (this: any, text: string) {
+        return this.send(`child says ${text}`);
+      };
+      overrides.get("/", (req: any, res: any) => res.shout(req.who));
+      app.use("/overrides", overrides);
+
+      const other = create();
+      // Called as a handler, not mounted: it inherits nothing.
+      other.get("/other", (req: any, res: any) => res.json({ who: req.who ?? null, shout: typeof res.shout }));
+      app.get("/other", other);
+
+      app.get("/after", (req: any, res: any) => res.shout(`${req.who} ${req.querystring()}`));
+      app.get("/types", (req: any, res: any) => res.json({ querystring: typeof req.querystring, get: typeof req.get, json: typeof res.json }));
+    });
+  });
+
+  afterAll(() => Promise.all([pair.express.close(), pair.pype.close()]));
+
+  it.each(["/inherits?a=1", "/overrides", "/other", "/overrides", "/after?b=2", "/types"])("GET %s", (path) => same(path, {}, pair));
+
+  it("doesn't change other apps or Pype's own prototypes", () => {
+    const one: any = new Pype();
+    const two: any = new Pype();
+    one.request.only = 1;
+    expect(two.request.only).toBeUndefined();
+    expect((PypeRequest.prototype as any).only).toBeUndefined();
+    expect(one.request).toBeInstanceOf(PypeRequest);
+    expect(one.response).toBeInstanceOf(PypeResponse);
   });
 });
 

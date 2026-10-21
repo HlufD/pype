@@ -356,6 +356,17 @@ app.use("/admin", adminApp);
 
 The root router is `app.router`, like in Express 5.
 
+`app.request` and `app.response` are the prototypes of the app's `req` and
+`res`, like in Express: what you add there is on every request and response
+of the app, and of the apps mounted in it, which can override it.
+
+```ts
+app.response.ok = function (data) {
+  return this.status(200).json({ ok: true, data });
+};
+app.get("/users", (req, res) => res.ok(users));
+```
+
 Middleware can rewrite `req.url` or `req.method` and call `next()`, like in
 Express: the following layers are matched against the new URL and method,
 so `method-override` and URL rewriting work. A rewrite in middleware mounted
@@ -1290,6 +1301,9 @@ Compatibility at a glance:
 | `"x-powered-by"` | Off by default |
 | Default 404 and error responses | JSON instead of HTML |
 | `app.use(otherApp)`, `mountpath`, `path()`, the `mount` event | Same |
+| Routers as middleware functions (`router(req, res, next)`, `router.handle()`) | Same |
+| `app.request`, `app.response` | Same |
+| Rewriting `req.url` or `req.method` in middleware, `method-override` | Same |
 
 Differences:
 

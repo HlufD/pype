@@ -80,6 +80,17 @@ export class Pype {
   parent?: Pype;
   /** The root router, like Express's `app.router`. */
   readonly router = new PypeRouter();
+  /**
+   * The prototype of this app's requests, like Express's `app.request`:
+   * properties and methods added here are on every `req` of the app, and of
+   * the apps mounted in it.
+   */
+  readonly request: Request;
+  /** The prototype of this app's responses, like Express's `app.response`. */
+  readonly response: Response;
+  /** Classes whose prototypes are `request` and `response`, for the app's own server. */
+  private requestClass: typeof Request;
+  private responseClass: typeof Response;
   /** Settings that still have their default, which a mounted app may inherit instead. */
   private defaults = new Set<string>();
   /**
@@ -112,6 +123,11 @@ export class Pype {
    * @param settings - Initial settings, applied with {@link Pype.set}.
    */
   constructor(settings: Settings = {}) {
+    this.requestClass = class extends Request {};
+    this.responseClass = class extends Response {};
+    this.request = this.requestClass.prototype;
+    this.response = this.responseClass.prototype;
+
     this.set("env", process.env.NODE_ENV || "development");
     this.set("etag", "weak");
     // Unlike Express, no X-Powered-By header unless this is turned on.
@@ -205,7 +221,8 @@ export class Pype {
     this.compile();
 
     const server = createServer(
-      { IncomingMessage: Request, ServerResponse: Response },
+      // Requests of this server are created with the app's prototypes.
+      { IncomingMessage: this.requestClass, ServerResponse: this.responseClass },
       this.handler,
     );
 
@@ -264,6 +281,8 @@ export class Pype {
       }
       Object.setPrototypeOf(handler.settings, this.settings);
       Object.setPrototypeOf(handler.engines, this.engines);
+      Object.setPrototypeOf(handler.request, this.request);
+      Object.setPrototypeOf(handler.response, this.response);
       use(path, function mountedApp(req: Request, res: Response, next: NextFunction) {
         handler.handle(req, res, next);
       });
@@ -858,10 +877,15 @@ export class Pype {
         }
       : undefined;
 
-    if (!(rawReq instanceof Request))
-      Object.setPrototypeOf(rawReq, Request.prototype);
-    if (!(rawRes instanceof Response))
-      Object.setPrototypeOf(rawRes, Response.prototype);
+    // Like Express, requests get the app's prototypes, app.request and
+    // app.response; a router's hidden app only makes sure they are Pype's.
+    if (this.hostsRouter) {
+      if (!(rawReq instanceof Request)) Object.setPrototypeOf(rawReq, Request.prototype);
+      if (!(rawRes instanceof Response)) Object.setPrototypeOf(rawRes, Response.prototype);
+    } else {
+      if (Object.getPrototypeOf(rawReq) !== this.request) Object.setPrototypeOf(rawReq, this.request);
+      if (Object.getPrototypeOf(rawRes) !== this.response) Object.setPrototypeOf(rawRes, this.response);
+    }
 
     const req = rawReq as Request;
     const res = rawRes as Response;

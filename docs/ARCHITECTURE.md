@@ -237,6 +237,13 @@ function that calls `handle()`, gives it the class's prototype and the
 fields, and returns it, so `new Pype()` can be passed to
 `http.createServer()`. `Pype.prototype` inherits from `Function.prototype`.
 
+Each app has its own request and response prototypes, `app.request` and
+`app.response`, like Express: small subclasses of `Request` and `Response`
+made in the constructor, which `listen()` hands to `createServer()`, so the
+app's own server creates requests with the right prototype. Requests from
+another server get it in `prepare()`, and a mounted app's prototypes
+inherit from its parent's.
+
 Apps are event emitters too (`EventEmitter.prototype`'s methods are copied
 onto `Pype.prototype`, as Express mixes them in), for the `mount` event.
 

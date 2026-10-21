@@ -1,5 +1,5 @@
 import { ServerResponse, STATUS_CODES } from "http";
-import { createReadStream, realpath, stat } from "fs";
+import { close, createReadStream, fstat, open, realpath, stat, Stats } from "fs";
 import { pipeline } from "stream";
 import { basename, extname, isAbsolute, join, resolve, sep } from "path";
 import type { Request } from "./request";
@@ -547,14 +547,7 @@ export class Response extends ServerResponse<Request> {
     const resolved = this.resolveFilePath(path, opts);
     if (resolved instanceof HttpError) return done(resolved);
 
-    const send = (file: string) => {
-      if (opts.root && opts.followSymlinks === false) {
-        return checkRealPath(file, opts.root, (error) =>
-          error ? done(error) : this.transferFile(file, opts, done),
-        );
-      }
-      this.transferFile(file, opts, done);
-    };
+    const send = (file: string) => this.transferFile(file, opts, done);
 
     // Like Express's send, a trailing slash asks for a directory: its index
     // file is sent, and a plain file is never matched (Windows would ignore
@@ -571,66 +564,93 @@ export class Response extends ServerResponse<Request> {
     send(resolved);
   }
 
-  /** Streams a checked file path, see {@link Response.sendFile}. */
+  /**
+   * Streams a checked file path, see {@link Response.sendFile}. The file is
+   * opened first and everything after reads that descriptor, so a path
+   * swapped for a symlink after the checks is never what gets served.
+   */
   private transferFile(
     resolved: string,
     opts: SendFileOptions,
     done: (error?: HttpError | NodeJS.ErrnoException) => void,
   ) {
-    stat(resolved, (error, stats) => {
-      if (error) return done(error);
-      if (stats.isDirectory()) {
-        return done(Object.assign(new HttpError(404, "EISDIR, read"), { code: "EISDIR" }));
-      }
+    open(resolved, "r", (openError, fd) => {
+      // Windows can't open a directory.
+      if (openError) return done(openError.code === "EISDIR" ? directoryError() : openError);
 
-      this.setFileHeaders(resolved, stats, opts);
+      const finish = (error?: HttpError | NodeJS.ErrnoException) => close(fd, () => done(error));
 
-      if (isPreconditionFailure(this.req.headers, this.getHeaders())) {
-        return done(new HttpError(412));
-      }
-
-      if (this.req.fresh) {
-        this.statusCode = 304;
-        this.removeHeader("Content-Type");
-        this.removeHeader("Content-Length");
-        this.end();
-        return done();
-      }
-
-      let start = 0;
-      let end = Math.max(stats.size - 1, 0);
-
-      // An outdated If-Range asks for the whole file, not a part of a newer one.
-      if (opts.acceptRanges !== false && isRangeFresh(this.req.headers, this.getHeaders())) {
-        const ranges = this.req.range(stats.size, { combine: true });
-
-        if (ranges === -1) {
-          // On the error too, like Express's send: error handlers reset the headers.
-          const headers = { "Content-Range": `bytes */${stats.size}` };
-          this.set(headers);
-          return done(Object.assign(new HttpError(416), { headers }));
+      fstat(fd, (statError, stats) => {
+        if (statError) return finish(statError);
+        if (opts.root && opts.followSymlinks === false) {
+          return checkRealPath(resolved, opts.root, stats, (error) =>
+            error ? finish(error) : this.transferOpenFile(resolved, fd, stats, opts, done, finish),
+          );
         }
-
-        if (Array.isArray(ranges) && ranges.type === "bytes" && ranges.length === 1) {
-          start = ranges[0].start;
-          end = ranges[0].end;
-          this.statusCode = 206;
-          this.set("Content-Range", `bytes ${start}-${end}/${stats.size}`);
-        }
-      }
-
-      const length = stats.size === 0 ? 0 : end - start + 1;
-      this.set("Content-Length", String(length));
-
-      if (this.req.method === "HEAD" || length === 0) {
-        this.end();
-        return done();
-      }
-
-      pipeline(createReadStream(resolved, { start, end }), this, (streamError) =>
-        done(streamError ?? undefined),
-      );
+        this.transferOpenFile(resolved, fd, stats, opts, done, finish);
+      });
     });
+  }
+
+  /** The rest of {@link Response.transferFile}, once `fd` is known to be the file to send. */
+  private transferOpenFile(
+    resolved: string,
+    fd: number,
+    stats: Stats,
+    opts: SendFileOptions,
+    done: (error?: HttpError | NodeJS.ErrnoException) => void,
+    finish: (error?: HttpError | NodeJS.ErrnoException) => void,
+  ) {
+    if (stats.isDirectory()) return finish(directoryError());
+
+    this.setFileHeaders(resolved, stats, opts);
+
+    if (isPreconditionFailure(this.req.headers, this.getHeaders())) {
+      return finish(new HttpError(412));
+    }
+
+    if (this.req.fresh) {
+      this.statusCode = 304;
+      this.removeHeader("Content-Type");
+      this.removeHeader("Content-Length");
+      this.end();
+      return finish();
+    }
+
+    let start = 0;
+    let end = Math.max(stats.size - 1, 0);
+
+    // An outdated If-Range asks for the whole file, not a part of a newer one.
+    if (opts.acceptRanges !== false && isRangeFresh(this.req.headers, this.getHeaders())) {
+      const ranges = this.req.range(stats.size, { combine: true });
+
+      if (ranges === -1) {
+        // On the error too, like Express's send: error handlers reset the headers.
+        const headers = { "Content-Range": `bytes */${stats.size}` };
+        this.set(headers);
+        return finish(Object.assign(new HttpError(416), { headers }));
+      }
+
+      if (Array.isArray(ranges) && ranges.type === "bytes" && ranges.length === 1) {
+        start = ranges[0].start;
+        end = ranges[0].end;
+        this.statusCode = 206;
+        this.set("Content-Range", `bytes ${start}-${end}/${stats.size}`);
+      }
+    }
+
+    const length = stats.size === 0 ? 0 : end - start + 1;
+    this.set("Content-Length", String(length));
+
+    if (this.req.method === "HEAD" || length === 0) {
+      this.end();
+      return finish();
+    }
+
+    // The stream owns the descriptor from here and closes it.
+    pipeline(createReadStream(resolved, { fd, start, end }), this, (streamError) =>
+      done(streamError ?? undefined),
+    );
   }
 
   /**
@@ -791,6 +811,7 @@ function errorStatus(error: NodeJS.ErrnoException): number {
 function checkRealPath(
   file: string,
   root: string,
+  opened: Stats,
   callback: (error?: HttpError | NodeJS.ErrnoException) => void,
 ) {
   realpath(root, (rootError, realRoot) => {
@@ -800,7 +821,19 @@ function checkRealPath(
       if (fileError) return callback(fileError);
       if (realFile !== realRoot && !realFile.startsWith(realRoot + sep))
         return callback(new HttpError(403));
-      callback();
+
+      // The path may have changed since it was opened: the file checked
+      // inside the root must be the one that was opened.
+      stat(realFile, (statError, checked) => {
+        if (statError) return callback(statError);
+        if (checked.dev !== opened.dev || checked.ino !== opened.ino) return callback(new HttpError(403));
+        callback();
+      });
     });
   });
+}
+
+/** The error for a directory where a file was expected, which `sendFile` turns into `next()`. */
+function directoryError() {
+  return Object.assign(new HttpError(404, "EISDIR, read"), { code: "EISDIR" });
 }

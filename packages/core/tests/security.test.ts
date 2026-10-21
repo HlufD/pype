@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { request as httpRequest, Server } from "http";
 import { AddressInfo } from "net";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { Pype } from "../src/core/server";
@@ -235,4 +235,37 @@ describe("res.sendFile() and symlinks", () => {
   it("answers 404 for missing files with followSymlinks: false", async () => {
     expect((await fetch(`${base}/strict/missing.txt`)).status).toBe(404);
   });
+
+  // File symlinks need admin rights on Windows.
+  it.skipIf(process.platform === "win32")(
+    "never serves a symlink swapped in after the check with followSymlinks: false",
+    async () => {
+      // public/swap flips between a link inside the root and one to the
+      // secret, the same size so a swapped read isn't cut short.
+      writeFileSync(join(publicDir, "docs", "decoy.txt"), "NOT-SECRET");
+      const targets = [join(publicDir, "docs", "decoy.txt"), join(dir, "secret", "key.txt")];
+      let flips = 0;
+      const flip = () => {
+        const temp = join(publicDir, `swap-${flips}`);
+        symlinkSync(targets[flips++ % 2], temp);
+        renameSync(temp, join(publicDir, "swap"));
+      };
+      flip();
+      const swapper = setInterval(flip, 0);
+
+      try {
+        const replies = await Promise.all(
+          Array.from({ length: 100 }, async () => {
+            const reply = await fetch(`${base}/strict/swap`);
+            return reply.text();
+          }),
+        );
+        expect(replies.filter((body) => body.includes("TOP-SECRET"))).toEqual([]);
+        expect(replies).toContain("NOT-SECRET");
+      } finally {
+        clearInterval(swapper);
+      }
+    },
+    20_000,
+  );
 });

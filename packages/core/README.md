@@ -818,9 +818,10 @@ res.sendFile("/srv/reports/q3.pdf", (err) => {
   files from outside it. If users can create files under `root` (an uploads
   folder, for example), set `followSymlinks: false`: the real path, with
   symlinks resolved, must then stay inside the real `root`, otherwise 403.
-  The check runs just before the file is opened, so it can't stop someone
-  who swaps a file for a symlink in between. Don't serve from a folder that
-  untrusted users can write to without other safeguards.
+  The file is opened first and then checked: the opened file must be the
+  one found at the real path inside `root`, so swapping the path for a
+  symlink while the request runs gets a 403, never the other file. Hard
+  links aren't detected, since they have no target to check.
 - Sets `Content-Type` from the extension, `Content-Length`, `Last-Modified`,
   a weak `ETag`, `Cache-Control` and `Accept-Ranges`.
 - Answers 304 for fresh conditional requests, 412 when `If-Match` or

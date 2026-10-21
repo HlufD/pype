@@ -427,3 +427,32 @@ describe("body parsers", () => {
     expect(() => json({ limit: "lots" })).toThrow(TypeError);
   });
 });
+
+describe("regular expression paths", () => {
+  let api: TestServer;
+  const route = /^\/sticky\/(\d+)$/g;
+  const mount = /^\/mw\/(\w+)/y;
+
+  beforeAll(async () => {
+    const app = new Pype();
+    app.get(route, (req: Request, res: Response) => res.json(req.params));
+    app.use(mount, (req: Request, res: Response) => res.json(req.params));
+    api = await start(app);
+  });
+
+  afterAll(async () => {
+    await api.close();
+  });
+
+  it("match every request the same with the g or y flag", async () => {
+    for (let i = 0; i < 4; i++) {
+      expect(await api.json("/sticky/7")).toEqual({ 0: "7" });
+      expect(await api.json("/mw/abc")).toEqual({ 0: "abc" });
+    }
+  });
+
+  it("leave the caller's RegExp untouched", () => {
+    expect(route.lastIndex).toBe(0);
+    expect(mount.lastIndex).toBe(0);
+  });
+});

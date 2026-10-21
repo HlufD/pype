@@ -372,7 +372,7 @@ export class PypeRouter {
       for (const path of paths) {
         if (entry.type === "use") {
           const mount = path instanceof RegExp ? trimSlashes(basePath) : joinPaths(basePath, path);
-          const pattern = path instanceof RegExp ? path : undefined;
+          const pattern = path instanceof RegExp ? statelessPattern(path) : undefined;
           for (const handle of entry.handlers) {
             layers.push({ kind: "middleware", path: mount, pattern, handle, routers: chain, group });
           }
@@ -381,7 +381,7 @@ export class PypeRouter {
             kind: "route",
             fullPath: path instanceof RegExp ? trimSlashes(basePath) : joinPaths(basePath, path),
             routePath: entry.path,
-            pattern: path instanceof RegExp ? path : undefined,
+            pattern: path instanceof RegExp ? statelessPattern(path) : undefined,
             baseUrl: trimSlashes(basePath),
             methods: entry.methods,
             handlers: [...entry.handlers],
@@ -433,6 +433,15 @@ function paramKeys(path: string): string[] {
     else if (segment.endsWith("*")) keys.push("*");
   }
   return keys;
+}
+
+/**
+ * A copy of a regular expression path without the `g` and `y` flags, whose
+ * `lastIndex` would carry over from one request to the next and make the
+ * same URL match only every other time. The caller's RegExp is left alone.
+ */
+function statelessPattern(pattern: RegExp) {
+  return pattern.global || pattern.sticky ? new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, "")) : pattern;
 }
 
 /** Collapses repeated slashes and drops trailing ones. */

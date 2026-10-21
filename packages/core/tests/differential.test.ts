@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import express from "express";
@@ -1261,6 +1261,132 @@ describe("res.jsonp() and res.contentType() match Express", () => {
       for (const value of ["json", "html", "text%2Fplain", "png", "unknown-ext"]) await same(`/content-type/${value}`, {}, pair);
     } finally {
       await Promise.all([pair.express.close(), pair.pype.close()]);
+    }
+  });
+});
+
+describe("mounted apps match Express", () => {
+  let pair: Pair;
+  const mounts: Record<Kind, unknown[]> = { express: [], pype: [] };
+  const views = mkdtempSync(join(tmpdir(), "pype-subapp-views-"));
+
+  beforeAll(async () => {
+    writeFileSync(join(views, "page.tpl"), "page {{title}}");
+    pair = await startPair((app, kind) => {
+      const create = (): any => (kind === "express" ? express() : new Pype({ env: "test" }));
+      const k = kit(kind);
+      const who = (req: any, res: any) => ({
+        app: req.app.locals.name,
+        resApp: res.app.locals.name,
+        baseUrl: req.baseUrl,
+        originalUrl: req.originalUrl,
+        url: req.url,
+        params: req.params,
+        query: req.query,
+      });
+
+      app.locals.name = "parent";
+      app.set("json spaces", 2);
+      app.set("query parser", "extended");
+      app.engine("tpl", (path: string, options: any, callback: any) =>
+        callback(null, readFileSync(path, "utf8").replace("{{title}}", options.title)),
+      );
+
+      const admin = create();
+      admin.locals.name = "admin";
+      admin.set("views", views);
+      admin.set("view engine", "tpl");
+      admin.on("mount", (parent: any) => mounts[kind].push({ parent: parent.locals.name, mountpath: admin.mountpath, path: admin.path() }));
+      admin.get("/users/:id", (req: any, res: any) => res.json(who(req, res)));
+      admin.get("/throws", () => {
+        throw Object.assign(new Error("from admin"), { status: 418 });
+      });
+      admin.get("/caught", () => {
+        throw Object.assign(new Error("caught in admin"), { status: 409 });
+      });
+      admin.get("/page", (_req: any, res: any) => res.render("page", { title: "inherited engine" }));
+      admin.get("/settings", (req: any, res: any) =>
+        res.json({ spaces: req.app.get("json spaces"), parser: typeof req.app.get("query parser"), etag: req.app.get("etag"), path: req.app.path(), mountpath: req.app.mountpath }),
+      );
+      admin.use((err: any, req: any, res: any, next: any) => (req.path === "/caught" ? res.status(err.status).json({ caught: err.message }) : next(err)));
+
+      const deep = create();
+      deep.locals.name = "deep";
+      deep.set("json spaces", 0);
+      deep.get("/where", (req: any, res: any) => res.json({ ...who(req, res), path: deep.path() }));
+      admin.use("/deep", deep);
+
+      app.use("/admin", admin);
+      app.get("/admin/fallback", (req: any, res: any) => res.json({ fallback: who(req, res) }));
+
+      const tenant = create();
+      tenant.locals.name = "tenant";
+      tenant.get("/info", (req: any, res: any) => res.json(who(req, res)));
+      app.use("/orgs/:org", tenant);
+
+      const multi = create();
+      multi.locals.name = "multi";
+      multi.get("/", (req: any, res: any) => res.json({ ...who(req, res), path: multi.path() }));
+      app.use(["/one", "/two"], multi);
+
+      const plain = create();
+      plain.locals.name = "plain";
+      plain.get("/hi", (req: any, res: any) => res.json({ ...who(req, res), mountpath: plain.mountpath, path: plain.path() }));
+      const router = k.Router();
+      router.use("/plain", plain);
+      app.use("/r", router);
+
+      app.use((req: any, res: any) => res.status(404).json({ notFound: req.originalUrl, app: req.app.locals.name }));
+      app.use((err: any, req: any, res: any, _next: any) => res.status(err.status ?? 500).json({ error: err.message, app: req.app.locals.name }));
+    });
+  });
+
+  afterAll(async () => {
+    await Promise.all([pair.express.close(), pair.pype.close()]);
+    rmSync(views, { recursive: true, force: true });
+  });
+
+  it.each([
+    "/admin/users/7?a[b]=1",
+    "/admin/fallback",
+    "/admin/missing",
+    "/admin/throws",
+    "/admin/caught",
+    "/admin/page",
+    "/admin/settings",
+    "/admin/deep/where?x=1",
+    "/orgs/acme/info",
+    "/one",
+    "/two/",
+    "/r/plain/hi",
+    "/elsewhere",
+  ])("GET %s", (path) => same(path, {}, pair));
+
+  it.each(["/admin/users/7", "/admin/missing"])("OPTIONS and HEAD %s", async (path) => {
+    await same(path, { method: "OPTIONS" }, pair);
+    await same(path, { method: "HEAD" }, pair);
+  });
+
+  it("really renders with the parent's engine, and falls back to the parent", async () => {
+    expect((await pair.pype.send("/admin/page")).text).toBe("page inherited engine");
+    expect(JSON.parse((await pair.pype.send("/admin/fallback")).text).fallback.app).toBe("parent");
+    expect((await pair.pype.send("/admin/settings")).text).toContain('\n  "spaces": 2');
+  });
+
+  it("emits mount with the parent, after setting mountpath", () => {
+    expect(mounts.pype).toEqual(mounts.express);
+    expect(mounts.pype).toEqual([{ parent: "parent", mountpath: "/admin", path: "/admin" }]);
+  });
+
+  it("knows its parent, mountpath and path", () => {
+    for (const kind of ["express", "pype"] as Kind[]) {
+      const parent: any = kind === "express" ? express() : new Pype();
+      const child: any = kind === "express" ? express() : new Pype();
+      expect(child.mountpath).toBe("/");
+      expect(child.path()).toBe("");
+      parent.use("/child", child);
+      expect(child.parent).toBe(parent);
+      expect(child.path()).toBe("/child");
     }
   });
 });

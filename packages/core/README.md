@@ -322,19 +322,39 @@ createHttpsServer({ key, cert }, app).listen(443);
 
 #### `app.use([path], ...handlers)`
 
-Adds middleware, error middleware or routers. Without a path they run for
-every request; with a path, for that path and everything below it.
+Adds middleware, error middleware, routers or other apps. Without a path
+they run for every request; with a path, for that path and everything below
+it.
 
 ```ts
 app.use(logger);
 app.use(cors(), helmet());              // several at once
 app.use([auth, audit]);                 // arrays are flattened
 app.use("/api", apiRouter);             // mount a router
+app.use("/admin", adminApp);            // mount another app
 app.use("/static", serveStatic("public"));
 app.use(["/a", "/b"], audit);           // several mount paths, runs once
 app.use(/^\/v(\d+)/, version);          // RegExp mount path, req.params[0] is the version
 app.use(onError);                       // four parameters: error middleware
 ```
+
+Mounting another app works like in Express. Inside it, `req.app` and
+`res.app` are the mounted app; requests it doesn't answer, and errors it
+doesn't handle, continue in the parent, with `req.app` restored. The mounted
+app gets `mountpath` and `parent`, `adminApp.path()` returns its full mount
+path (`"/admin"`), and it emits `"mount"` with the parent. It inherits the
+parent's engines, and the settings it didn't set itself that Express doesn't
+give a default: `"view engine"`, `"json spaces"`, `"json replacer"`, the
+routing settings, `"trust proxy"` and your own settings.
+
+```ts
+const adminApp = new Pype();
+adminApp.on("mount", (parent) => console.log(`admin mounted at ${adminApp.mountpath}`));
+adminApp.get("/", (req, res) => res.send("admin home"));
+app.use("/admin", adminApp);
+```
+
+The root router is `app.router`, like in Express 5.
 
 A mount path can have params, like `app.use("/orgs/:org", tenant)`: each
 matches one path segment, the middleware gets them in `req.params` (and runs
@@ -1252,7 +1272,7 @@ Compatibility at a glance:
 | `"etag"`, `"json escape"`, `"json spaces"`, `"json replacer"` | Same values and results |
 | `"x-powered-by"` | Off by default |
 | Default 404 and error responses | JSON instead of HTML |
-| `app.use(otherApp)` | Not implemented |
+| `app.use(otherApp)`, `mountpath`, `path()`, the `mount` event | Same |
 
 Differences:
 
@@ -1278,7 +1298,6 @@ Differences:
 - Optional parameters and wildcards use the Express 4 syntax: `/:id?` and
   `/files/*` (`req.params["*"]`), where Express 5 uses `{/:id}` and
   `/*name`. The `*` also matches an empty rest.
-- Not implemented: mounting another app with `app.use(otherApp)`.
 
 ## Production notes
 

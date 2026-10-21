@@ -233,6 +233,25 @@ function that calls `handle()`, gives it the class's prototype and the
 fields, and returns it, so `new Pype()` can be passed to
 `http.createServer()`. `Pype.prototype` inherits from `Function.prototype`.
 
+Apps are event emitters too (`EventEmitter.prototype`'s methods are copied
+onto `Pype.prototype`, as Express mixes them in), for the `mount` event.
+
+#### Mounting another app
+
+`app.use(path, otherApp)` registers a middleware that calls
+`otherApp.handle(req, res, next)`, like Express's `mounted_app`. It sets the
+mounted app's `mountpath` and `parent`, makes its `settings` and `engines`
+inherit from the parent's through their prototypes, and emits `mount`.
+Settings still at a default Express doesn't have (`defaults` records which
+ones) are deleted first, so they inherit: the routing settings, `json
+spaces`, `json replacer` and `trust proxy`.
+
+With a `next` callback, `handle()` doesn't reset `req.originalUrl` and
+`req.baseUrl`, parses `req.query` again only when its query parser differs,
+and instead of the final handler calls `next(err)`, after `prepare()`'s
+`restore()` has put back `req.app`, `res.app`, `req.next`, `req.params`,
+`req.query` and the prototypes.
+
 #### State
 
 | Field | Purpose |
@@ -882,7 +901,7 @@ before and after.
 - Routing is case-sensitive by default, unlike Express, and routers without
   `caseSensitive` or `strict` options follow the app's settings.
 - No routers mounted on a RegExp or on a path with several params in one
-  segment, and no mounting another app with `app.use(otherApp)`.
+  segment.
 
 ## Background
 

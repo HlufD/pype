@@ -5,6 +5,7 @@ import {
   ServerResponse,
   createServer,
 } from "http";
+import { EventEmitter } from "events";
 import { HTTP_METHODS, METHODS } from "../enums/methods.enum";
 import { RouteHandler } from "../types/route-handler";
 import { lowerAscii, RouteNode } from "../utils/Trie-Route";
@@ -18,9 +19,11 @@ import {
   PypeRouter,
   RouteLayer,
   UseHandler,
+  isPathArgument,
   routingVersion,
 } from "./router";
 import { AnyHandler, ErrorMiddleware, Middleware } from "../types/middleware";
+import { NextFunction } from "../types/next-function";
 import { Request } from "./request";
 import { Response } from "./response";
 import { generateETag, generateStrongETag, parseQuery } from "../utils/helpers";
@@ -38,9 +41,19 @@ type Settings = Record<string, any>;
  * `http.createServer(app)`, `https.createServer(options, app)` and
  * `supertest(app)` work.
  */
-export interface Pype extends ExtraRouteMethods<Pype> {
-  (req: IncomingMessage, res: ServerResponse): void;
+export interface Pype extends ExtraRouteMethods<Pype>, EventEmitter {
+  /**
+   * @param next - Called instead of answering when nothing handled the
+   * request, or with an error, as when the app is mounted in another one.
+   */
+  (req: IncomingMessage, res: ServerResponse, next?: (err?: any) => void): void;
 }
+
+/**
+ * Settings a mounted app takes from its parent unless it set them itself,
+ * the ones Express doesn't give a default; `"trust proxy"` too, like Express.
+ */
+const INHERITED_SETTINGS = ["case sensitive routing", "strict routing", "json spaces", "json replacer", "trust proxy", "trust proxy fn"];
 
 /**
  * An Express-compatible application.
@@ -60,8 +73,14 @@ export class Pype {
   engines: Record<string, Engine> = {};
   /** Views found so far by name, used when `"view cache"` is on. */
   cache: Record<string, View> = {};
-
-  private readonly router = new PypeRouter();
+  /** The path this app is mounted on in its parent, like Express: `"/"` when it isn't mounted. */
+  mountpath: PathParam = "/";
+  /** The app this one is mounted in, see {@link Pype.use}. */
+  parent?: Pype;
+  /** The root router, like Express's `app.router`. */
+  readonly router = new PypeRouter();
+  /** Settings that still have their default, which a mounted app may inherit instead. */
+  private defaults = new Set<string>();
   private layers: Layer[] = [];
   private routes = createRouteTable();
   /** Trie entry to every route layer registered for that method and path. */
@@ -103,6 +122,7 @@ export class Pype {
     this.set("view", View);
     this.set("views", resolve("views"));
     this.locals.settings = this.settings;
+    this.defaults = new Set(Object.keys(this.settings));
 
     for (const name in settings) this.set(name, settings[name]);
 
@@ -111,8 +131,8 @@ export class Pype {
 
     // The app is a function, like Express's: it gets this object's fields
     // and prototype, and the constructor returns it instead.
-    const app = function (req: IncomingMessage, res: ServerResponse) {
-      app.handle(req, res);
+    const app = function (req: IncomingMessage, res: ServerResponse, next?: (err?: any) => void) {
+      app.handle(req, res, next);
     } as Pype;
     Object.setPrototypeOf(app, new.target.prototype);
     Object.assign(app, this);
@@ -128,6 +148,7 @@ export class Pype {
    * @param value - New value.
    */
   set(name: string, value: any): this {
+    this.defaults.delete(name);
     this.settings[name] = value;
     if (name === "etag")
       this.settings["etag fn"] = compileETag(value);
@@ -211,8 +232,41 @@ export class Pype {
   use(...handlers: UseHandler[]): this;
   use(path: PathParam, ...handlers: UseHandler[]): this;
   use(...args: any[]): this {
-    (this.router.use as (...args: any[]) => PypeRouter)(...args);
+    const use = (this.router.use as (...args: any[]) => PypeRouter).bind(this.router);
+    const path: PathParam = isPathArgument(args[0]) ? args[0] : "/";
+    const handlers = (isPathArgument(args[0]) ? args.slice(1) : args).flat(Infinity);
+    if (!handlers.some((handler) => handler instanceof Pype)) {
+      use(...args);
+      return this;
+    }
+
+    for (const handler of handlers) {
+      if (!(handler instanceof Pype)) {
+        use(path, handler);
+        continue;
+      }
+
+      // Like Express: the mounted app knows where it is, inherits the
+      // settings and engines it didn't set, and hands requests it doesn't
+      // answer back to this app.
+      handler.mountpath = path;
+      handler.parent = this;
+      for (const name of INHERITED_SETTINGS) {
+        if (handler.defaults.has(name)) delete handler.settings[name];
+      }
+      Object.setPrototypeOf(handler.settings, this.settings);
+      Object.setPrototypeOf(handler.engines, this.engines);
+      use(path, function mountedApp(req: Request, res: Response, next: NextFunction) {
+        handler.handle(req, res, next);
+      });
+      handler.emit("mount", this);
+    }
     return this;
+  }
+
+  /** The full path the app is mounted on, `""` for the top app, like Express's `app.path()`. */
+  path(): string {
+    return this.parent ? this.parent.path() + this.mountpath : "";
   }
 
   /**
@@ -520,13 +574,19 @@ export class Pype {
    * An OPTIONS request that nothing answered gets an `Allow` list of the
    * path's methods, like Express.
    */
-  private handle(rawReq: IncomingMessage, rawRes: ServerResponse) {
-    const { req, res } = this.prepare(rawReq, rawRes);
+  private handle(rawReq: IncomingMessage, rawRes: ServerResponse, callback?: (err?: any) => void) {
+    const { req, res, restore } = this.prepare(rawReq, rawRes, callback !== undefined);
+    // With a callback, as a mounted app: what nothing handled goes back to it.
+    const finish = (err?: any) => {
+      if (!callback) return this.finalHandler(req, res, err);
+      restore!();
+      callback(err);
+    };
 
     try {
       this.compile();
     } catch (error) {
-      return this.finalHandler(req, res, error);
+      return finish(error);
     }
 
     const method = (req.method || "GET").toLowerCase();
@@ -666,7 +726,7 @@ export class Pype {
 
       if (!err && routerDone(this.router)) return;
 
-      this.finalHandler(req, res, err);
+      finish(err);
     };
 
     req.next = next;
@@ -716,15 +776,31 @@ export class Pype {
   }
 
   /**
-   * Gives requests from `http.createServer(app.handler)` the Pype prototypes
-   * and resets per-request state, like Express does.
+   * Gives requests from `http.createServer(app)` the Pype prototypes and
+   * resets per-request state, like Express does.
    *
    * Duplicate slashes are collapsed in `req.path` and `req.url` here, once,
    * so path-scoped middleware sees the same path the router matches.
    * Otherwise `//admin/secret` could reach an `/admin/secret` route without
    * running middleware mounted on `/admin`. `req.originalUrl` keeps the raw URL.
+   *
+   * @param mounted - The app runs inside another one, which already set
+   * `req.originalUrl` and `req.baseUrl`; `restore()` gives the request back
+   * as it was, like Express when a mounted app is done.
    */
-  private prepare(rawReq: IncomingMessage, rawRes: ServerResponse) {
+  private prepare(rawReq: IncomingMessage, rawRes: ServerResponse, mounted = false) {
+    const saved = mounted
+      ? {
+          app: (rawReq as Request).app,
+          resApp: (rawRes as Response).app,
+          next: (rawReq as Request).next,
+          params: (rawReq as Request).params,
+          query: (rawReq as Request).query,
+          requestProto: Object.getPrototypeOf(rawReq),
+          responseProto: Object.getPrototypeOf(rawRes),
+        }
+      : undefined;
+
     if (!(rawReq instanceof Request))
       Object.setPrototypeOf(rawReq, Request.prototype);
     if (!(rawRes instanceof Response))
@@ -736,21 +812,35 @@ export class Pype {
     const queryStart = url.indexOf("?");
     const rawPath = queryStart === -1 ? url : url.slice(0, queryStart);
     const path = rawPath.includes("//") ? rawPath.replace(/\/{2,}/g, "/") : rawPath;
+    const parser = this.settings["query parser fn"];
+    // Inside another Pype app, req.query is parsed again only with another parser.
+    const parseQuery = !mounted || !(saved!.app instanceof Pype) || saved!.app.settings["query parser fn"] !== parser;
 
     req.app = this;
     res.app = this;
     req.res = res;
-    req.originalUrl = url;
+    req.originalUrl = (mounted && req.originalUrl) || url;
     req.path = path;
     req.url = path === rawPath ? url : path + url.slice(rawPath.length);
-    req.query =
-      this.settings["query parser fn"](queryStart === -1 ? null : url.slice(queryStart + 1));
-    req.baseUrl = "";
+    if (parseQuery) req.query = parser(queryStart === -1 ? null : url.slice(queryStart + 1));
+    req.baseUrl = (mounted && req.baseUrl) || "";
     req.params = {};
     res.locals = res.locals || {};
     if (this.settings["x-powered-by"]) res.setHeader("X-Powered-By", "Pype");
 
-    return { req, res };
+    const restore = saved
+      ? () => {
+          req.app = saved.app;
+          res.app = saved.resApp;
+          req.next = saved.next;
+          req.params = saved.params;
+          req.query = saved.query;
+          Object.setPrototypeOf(req, saved.requestProto);
+          Object.setPrototypeOf(res, saved.responseProto);
+        }
+      : undefined;
+
+    return { req, res, restore };
   }
 
   /**
@@ -930,6 +1020,12 @@ export class Pype {
 // Apps are functions, see the constructor: `app.call()` and
 // `app instanceof Function` work like with Express.
 Object.setPrototypeOf(Pype.prototype, Function.prototype);
+
+// Like Express apps, apps are event emitters: `app.on("mount", parent => ...)`.
+for (const name of Object.getOwnPropertyNames(EventEmitter.prototype)) {
+  if (name === "constructor" || Object.prototype.hasOwnProperty.call(Pype.prototype, name)) continue;
+  Object.defineProperty(Pype.prototype, name, Object.getOwnPropertyDescriptor(EventEmitter.prototype, name)!);
+}
 
 // Every other HTTP method gets a route method too, like in Express. On the
 // app, that includes `bind` for BIND, which replaces Function's `bind` as

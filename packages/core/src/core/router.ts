@@ -556,7 +556,7 @@ for (const method of METHODS) {
  * the test Express uses: a string, a RegExp, or an array whose first leaf
  * isn't a function or router.
  */
-function isPathArgument(arg: unknown): boolean {
+export function isPathArgument(arg: unknown): boolean {
   let first = arg;
   while (Array.isArray(first) && first.length > 0) first = first[0];
   return typeof first === "string" || first instanceof RegExp;

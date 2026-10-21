@@ -543,7 +543,7 @@ export class Pype {
             // Only matched route layers are in the order, plus, for OPTIONS,
             // the path's other routes, which were handled above.
             if (matchedLayers && !matchedLayers.has(layer)) continue;
-            params = match!.params;
+            params = pickParams(match!.params, layer.keys);
           }
 
           if (layer.group) (ranGroups ??= new Set()).add(layer.group);
@@ -558,8 +558,8 @@ export class Pype {
           if (layer.pattern) {
             mounted = matchMount(layer.pattern, relativePath(req.path, layer.path));
             if (!mounted) continue;
-          } else if (layer.path.includes("/:")) {
-            mounted = mountParams(req.path, layer.path);
+          } else if (layer.keys.length > 0) {
+            mounted = { params: pickParams(mountParams(req.path, layer.path), layer.keys), path: "" };
           }
         } catch (error) {
           err = err || error;
@@ -673,37 +673,85 @@ export class Pype {
     layer: MiddlewareLayer,
     err: any,
     next: (err?: any) => void,
-    mounted: PatternMatch | null = null,
-    getParamCalls?: () => Map<PypeRouter, Record<string, ParamCall>>,
+    mounted: PatternMatch | null,
+    getParamCalls: () => Map<PypeRouter, Record<string, ParamCall>>,
   ) {
     const { url, path, baseUrl } = req;
-    // Like Express, middleware sees the params of its own mount path only.
-    req.params = mounted ? mounted.params : {};
+    // Like Express, middleware sees the params of its own mount path, and the
+    // router's param() callbacks run for a regular expression's groups too.
+    // A string mount path's params come with an empty `mounted.path`: the
+    // layer's path already mounts that part.
+    const params = mounted ? mounted.params : {};
 
-    // Like Express, the router's param() callbacks run for a regular
-    // expression mount path's params too.
-    const router = layer.routers[layer.routers.length - 1];
-    const keys = mounted ? Object.keys(mounted.params) : [];
-    if (getParamCalls && keys.length > 0 && router.hasParams) {
+    this.enterParams(req, res, layer, params, Object.keys(params), path, getParamCalls, (error) => {
+      if (error) return next(error);
+
+      mount(req, layer.path);
+      if (mounted) mount(req, mounted.path);
+
+      const done = once((error?: any) => {
+        req.url = url;
+        req.path = path;
+        req.baseUrl = baseUrl;
+        next(error);
+      });
+
+      invoke(layer.handle, err, req, res, done);
+    });
+  }
+
+  /**
+   * Sets `req.params` for a layer like Express's nested routers do: each
+   * router sees the params of its own paths, plus its parent's when it was
+   * created with `mergeParams`. The `param()` callbacks of each router run
+   * for the params of the paths registered on it, outermost first, so
+   * `app.param("org")` runs for `app.use("/orgs/:org", router)`.
+   *
+   * @param params - The layer's own params.
+   * @param keys - Their names, for the callbacks of the layer's router.
+   * @param requestPath - The path the mount paths' params are read from.
+   * @param done - Called once `req.params` is set, or with a callback's error.
+   */
+  private enterParams(
+    req: Request,
+    res: Response,
+    layer: RouteLayer | MiddlewareLayer,
+    params: Record<string, string>,
+    keys: string[],
+    requestPath: string,
+    getParamCalls: () => Map<PypeRouter, Record<string, ParamCall>>,
+    done: (err?: any) => void,
+  ) {
+    const runCallbacks = (router: PypeRouter, names: string[], next: (err?: any) => void) => {
+      if (names.length === 0 || !router.hasParams) return next();
       const paramCalls = getParamCalls();
       let calls = paramCalls.get(router);
       if (!calls) paramCalls.set(router, (calls = Object.create(null) as Record<string, ParamCall>));
-      return processParams(router.params, keys, calls, req, res, (error) =>
-        error ? next(error) : this.callMiddleware(req, res, layer, err, next, mounted),
-      );
-    }
+      processParams(router.params, names, calls, req, res, next);
+    };
 
-    mount(req, layer.path);
-    if (mounted) mount(req, mounted.path);
-
-    const done = once((error?: any) => {
-      req.url = url;
-      req.path = path;
-      req.baseUrl = baseUrl;
-      next(error);
-    });
-
-    invoke(layer.handle, err, req, res, done);
+    // Callbacks may change req.params, the next router down inherits that.
+    let parent: Record<string, string> | undefined;
+    let level = 0;
+    const enter = (error?: any): void => {
+      if (error) return done(error);
+      if (level < layer.mounts.length) {
+        const scope = layer.mounts[level++];
+        // Each mount path's own segments, so a name used at two levels keeps both values.
+        let own: Record<string, string> = {};
+        try {
+          if (scope.keys.length > 0) own = pickParams(mountParams(requestPath, scope.path), scope.keys);
+        } catch (decodeError) {
+          return done(decodeError);
+        }
+        req.params = parent = mergeParams(scope.router.mergeParams, own, parent);
+        return runCallbacks(scope.router, scope.keys, enter);
+      }
+      const router = layer.routers[layer.routers.length - 1];
+      req.params = mergeParams(router.mergeParams, params, parent);
+      runCallbacks(router, keys, done);
+    };
+    enter();
   }
 
   /**
@@ -723,7 +771,6 @@ export class Pype {
     next: (err?: any) => void,
   ) {
     const { url, path, baseUrl } = req;
-    req.params = params;
     req.route = { path: layer.routePath, method };
     mount(req, layer.baseUrl);
 
@@ -747,14 +794,10 @@ export class Pype {
       leave(error);
     };
 
-    const router = layer.routers[layer.routers.length - 1];
     const keys = layer.pattern ? Object.keys(params) : layer.keys;
-    if (keys.length === 0 || !router.hasParams) return routeNext();
-
-    const paramCalls = getParamCalls();
-    let calls = paramCalls.get(router);
-    if (!calls) paramCalls.set(router, (calls = Object.create(null) as Record<string, ParamCall>));
-    processParams(router.params, keys, calls, req, res, (error) => (error ? leave(error) : routeNext()));
+    this.enterParams(req, res, layer, params, keys, path, getParamCalls, (error) =>
+      error ? leave(error) : routeNext(),
+    );
   }
 
   /**
@@ -1073,18 +1116,33 @@ function matchedPrefix(requestPath: string, prefix: string): string | null {
 }
 
 /**
- * The `:param` values of a mount path like `/orgs/:org`, URL-decoded. Its
- * `path` is empty: the layer's own path already mounts the matched part.
+ * The `:param` values of a mount path like `/orgs/:org`, URL-decoded.
  *
  * @throws A 400 error when a param has a malformed escape.
  */
-function mountParams(requestPath: string, mountPath: string): PatternMatch {
+function mountParams(requestPath: string, mountPath: string): Record<string, string> {
   const segments = matchedPrefix(requestPath, mountPath)!.split("/");
   const params: Record<string, string> = {};
   normalizeBase(mountPath).split("/").forEach((segment, i) => {
     if (segment.startsWith(":")) params[segment.slice(1).replace(/\?$/, "")] = decodeParam(segments[i])!;
   });
-  return { params, path: "" };
+  return params;
+}
+
+/** The params named `keys`, the ones a layer's own path has. */
+function pickParams(source: Record<string, string>, keys: string[]) {
+  const params: Record<string, string> = {};
+  for (const key of keys) if (source[key] !== undefined) params[key] = source[key];
+  return params;
+}
+
+/**
+ * Express's `mergeParams`: the parent's params, overridden by the layer's.
+ * Express also renumbers regular expression groups when both have them, but
+ * a parent here only has named params: routers can't be mounted on a RegExp.
+ */
+function mergeParams(enabled: boolean, params: Record<string, string>, parent?: Record<string, string>) {
+  return enabled && parent ? { ...parent, ...params } : params;
 }
 
 /** Strips `base` from the front of `req.url` and `req.path` and appends it to `req.baseUrl`. */

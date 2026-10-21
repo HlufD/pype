@@ -61,8 +61,8 @@ const root = mkdtempSync(join(tmpdir(), "pype-diff-"));
 /** Body parsers and routers of each framework, with the same options. */
 function kit(kind: Kind): Record<string, any> {
   return kind === "express"
-    ? { json: express.json, urlencoded: express.urlencoded, text: express.text, raw: express.raw, Router: () => express.Router() }
-    : { json, urlencoded, text, raw, Router: () => new PypeRouter() };
+    ? { json: express.json, urlencoded: express.urlencoded, text: express.text, raw: express.raw, Router: (options?: object) => express.Router(options) }
+    : { json, urlencoded, text, raw, Router: (options?: object) => new PypeRouter(options) };
 }
 
 /** Registers the shared routes. Handlers only use the API both frameworks have. */
@@ -527,9 +527,8 @@ describe("routing and params match Express", () => {
   it("a router mounted on a path with a param sees the matched base", async () => {
     const pair = await startPair((app, kind) => {
       const router = kit(kind).Router();
-      // Not req.params: Pype merges the mount's params, Express only with mergeParams.
       const reply = (req: any, res: any) =>
-        res.json({ id: req.params.id, baseUrl: req.baseUrl, url: req.url, path: req.path, originalUrl: req.originalUrl });
+        res.json({ params: req.params, baseUrl: req.baseUrl, url: req.url, path: req.path, originalUrl: req.originalUrl });
       router.get("/:id", reply);
       router.use(reply);
       app.use("/orgs/:org", router);
@@ -587,6 +586,60 @@ describe("routing and params match Express", () => {
     "/api/admin/users/7?leave=api",
     "/api/admin/users/a%20b",
   ])("nested routers: GET %s", (path) => same(path));
+
+  describe.each([false, true])("nested routers with mergeParams: %s", (mergeParams) => {
+    let pair: Pair;
+
+    beforeAll(async () => {
+      pair = await startPair((app, kind) => {
+        const k = kit(kind);
+        const orgs = k.Router({ mergeParams });
+        const teams = k.Router({ mergeParams });
+        const reply = (where: string) => (req: any, res: any) =>
+          res.json({ where, params: req.params, calls: req.calls ?? [], baseUrl: req.baseUrl });
+        const track = (name: string) => (req: any, _res: any, next: any, value: string) => {
+          (req.calls ??= []).push(`${name}=${value}`);
+          if (value === "renamed") req.params[name] = "changed";
+          next(value === "blocked" ? Object.assign(new Error("no"), { status: 403 }) : undefined);
+        };
+        app.param("org", track("app:org"));
+        orgs.param("team", track("orgs:team"));
+        orgs.param("org", track("orgs:org"));
+        teams.param("id", track("teams:id"));
+        teams.param("team", track("teams:team"));
+
+        teams.get("/:id", reply("teams route"));
+        teams.get(/^\/re\/(\d+)$/, reply("teams regexp"));
+        teams.use("/m/:x", reply("teams middleware"));
+        teams.use("/w", (req: any, res: any) => {
+          req.params.written = "yes";
+          res.json(req.params);
+        });
+        orgs.use("/teams/:team", teams);
+        orgs.get("/same/:org", reply("orgs same name"));
+        orgs.get("/", reply("orgs route"));
+        app.use("/orgs/:org", orgs);
+        app.use((err: any, _req: any, res: any, _next: any) => res.status(err.status ?? 500).json({ error: err.status }));
+      });
+    });
+
+    afterAll(() => Promise.all([pair.express.close(), pair.pype.close()]));
+
+    it.each([
+      "/orgs/acme",
+      "/orgs/acme/teams/red/7",
+      "/orgs/renamed/teams/red/7",
+      "/orgs/acme/teams/renamed/7",
+      "/orgs/blocked/teams/red/7",
+      "/orgs/acme/teams/blocked/7",
+      "/orgs/acme/teams/red/re/42",
+      "/orgs/acme/teams/red/m/x1/more",
+      "/orgs/caf%C3%A9/teams/a%20b/%E2%82%AC",
+      "/orgs/acme/same/other",
+      "/orgs/%ZZ/teams/red/7",
+      "/orgs/acme/teams/red/w",
+    ])("GET %s", (path) => same(path, {}, pair));
+  });
 
   it.each(["POST", "PUT", "OPTIONS", "HEAD"])("a param that fails to decode answers 400 for %s too", async (method) => {
     for (const path of ["/params/%ZZ", "/params/%", "/params/%E0%A4%A", "/params/a%20b"]) await same(path, { method });

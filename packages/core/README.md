@@ -451,8 +451,23 @@ app.use("/users", users);
 A router has the same `use`, `get`, `post`, `put`, `patch`, `delete`, `head`,
 `options`, `all` and `route` methods as the app, with the same behaviour.
 Routers can be nested, for example `api.use("/users", users)` and then
-`app.use("/api", api)`. Mount paths are literal: `use("/:id/posts", ...)`
-doesn't capture `:id`.
+`app.use("/api", api)`.
+
+Mount paths can have params. Like in Express, a router only sees the params
+of its own paths in `req.params`; create it with `mergeParams: true` to keep
+the ones of the path it is mounted on too:
+
+```ts
+const teams = new PypeRouter({ mergeParams: true });
+teams.get("/:team", (req, res) => {
+  req.params; // { org: "acme", team: "red" }, only { team: "red" } without mergeParams
+});
+app.use("/orgs/:org", teams);
+```
+
+`param()` callbacks run for the params of the paths registered on their own
+router: `app.param("org", ...)` runs for `app.use("/orgs/:org", teams)`,
+before the router's callbacks.
 
 `next("router")` inside a router skips the rest of that router and continues
 after it.
@@ -1161,7 +1176,7 @@ app.use(json());
 | Express                                | Pype |
 | -------------------------------------- | ---- |
 | `express()`                            | `new Pype()` |
-| `express.Router()`                     | `new PypeRouter()` |
+| `express.Router()`, `express.Router({ mergeParams: true })` | `new PypeRouter()`, `new PypeRouter({ mergeParams: true })` |
 | `express.json()`, `urlencoded()`, `text()`, `raw()` | `json()`, `urlencoded()`, `text()`, `raw()` |
 | `express.static(dir)`                  | `serveStatic(dir)` from the `serve-static` package |
 | `http.createServer(app)`               | `http.createServer(app.handler)` |

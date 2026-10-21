@@ -26,6 +26,28 @@ type StackEntry =
   | { type: "router"; path: PathParam; router: PypeRouter }
   | { type: "route"; path: PathParam; methods: HTTP_METHODS[]; handlers: AnyHandler[] };
 
+/** Options of {@link PypeRouter}, like Express's `Router()` options. */
+export interface RouterOptions {
+  /**
+   * Keep the params of the paths this router is mounted on in `req.params`,
+   * like Express. Default `false`: a router only sees its own paths' params.
+   */
+  mergeParams?: boolean;
+}
+
+/**
+ * One router a layer is nested in, with the params of the path the next
+ * router down is mounted on there; Express sets `req.params` router by router.
+ */
+export interface MountScope {
+  /** The router the mount path was registered on. */
+  router: PypeRouter;
+  /** Parameter names in that mount path. */
+  keys: string[];
+  /** The mount path with every prefix above it, where the params are read from. */
+  path: string;
+}
+
 /** A middleware function with its resolved mount path. */
 export interface MiddlewareLayer {
   kind: "middleware";
@@ -39,6 +61,10 @@ export interface MiddlewareLayer {
   handle: AnyHandler;
   /** Routers this layer belongs to, outermost first. */
   routers: PypeRouter[];
+  /** Parameter names in the middleware's own mount path, without its routers' mount paths. */
+  keys: string[];
+  /** Mount paths of the routers this layer is nested in, outermost first. */
+  mounts: MountScope[];
 }
 
 /** A route with its resolved paths. */
@@ -62,6 +88,8 @@ export interface RouteLayer {
   routers: PypeRouter[];
   /** Parameter names in the route path, in order; `"*"` for the wildcard. */
   keys: string[];
+  /** Mount paths of the routers this layer is nested in, outermost first. */
+  mounts: MountScope[];
 }
 
 /**
@@ -152,6 +180,16 @@ export class RouteBuilder {
  */
 export class PypeRouter {
   private readonly stack: StackEntry[] = [];
+
+  /** Whether `req.params` keeps the params of this router's mount paths, see {@link RouterOptions.mergeParams}. */
+  readonly mergeParams: boolean;
+
+  /**
+   * @param options - Router options, see {@link RouterOptions}.
+   */
+  constructor(options: RouterOptions = {}) {
+    this.mergeParams = Boolean(options.mergeParams);
+  }
 
   /** `param()` callbacks by parameter name. */
   readonly params: Record<string, ParamHandler[]> = Object.create(null);
@@ -345,8 +383,9 @@ export class PypeRouter {
    *
    * @param basePath - Mount path of this router.
    * @param routers - Routers this one is nested in, outermost first.
+   * @param mounts - Mount paths of those routers, see {@link MountScope}.
    */
-  compile(basePath = "", routers: PypeRouter[] = []): Layer[] {
+  compile(basePath = "", routers: PypeRouter[] = [], mounts: MountScope[] = []): Layer[] {
     const chain = [...routers, this];
     const layers: Layer[] = [];
 
@@ -359,7 +398,10 @@ export class PypeRouter {
         // Each mount path gets its own copy of the router's layers; copy i of
         // every layer shares a group, so only the first matching mount runs it.
         const copies = paths.map((path) => [
-          ...entry.router.compile(joinPaths(basePath, path as string), chain),
+          ...entry.router.compile(joinPaths(basePath, path as string), chain, [
+            ...mounts,
+            { router: this, keys: paramKeys(path as string), path: joinPaths(basePath, path as string) },
+          ]),
           { kind: "end", router: entry.router, routers: [...chain, entry.router] } as RouterEndLayer,
         ]);
         copies[0].forEach((_, index) => {
@@ -374,7 +416,8 @@ export class PypeRouter {
           const mount = path instanceof RegExp ? trimSlashes(basePath) : joinPaths(basePath, path);
           const pattern = path instanceof RegExp ? statelessPattern(path) : undefined;
           for (const handle of entry.handlers) {
-            layers.push({ kind: "middleware", path: mount, pattern, handle, routers: chain, group });
+            const keys = path instanceof RegExp ? [] : paramKeys(path);
+            layers.push({ kind: "middleware", path: mount, pattern, handle, routers: chain, keys, mounts, group });
           }
         } else {
           layers.push({
@@ -387,6 +430,7 @@ export class PypeRouter {
             handlers: [...entry.handlers],
             routers: chain,
             keys: path instanceof RegExp ? [] : paramKeys(path),
+            mounts,
             group,
           });
         }

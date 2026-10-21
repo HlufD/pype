@@ -98,6 +98,7 @@ export class Pype {
     this.set("strict routing", false);
     this.set("json spaces", undefined);
     this.set("json replacer", undefined);
+    this.set("jsonp callback name", "callback");
     this.set("view", View);
     this.set("views", resolve("views"));
     this.locals.settings = this.settings;

@@ -666,13 +666,21 @@ Use `res.sendStatus(404)` to send a status.
 #### `res.json(value)`
 
 Sends any JSON value with `Content-Type: application/json; charset=utf-8`,
-using the `"json replacer"` and `"json spaces"` settings.
+using the `"json replacer"`, `"json spaces"` and `"json escape"` settings.
 
 ```ts
 res.json({ users });
 res.json([1, 2, 3]);
 res.json("a string");
 ```
+
+#### `res.jsonp(value)`
+
+Like `res.json()`, but when the query has a callback (`?callback=handle`,
+named by the `"jsonp callback name"` setting), answers JSONP as
+`text/javascript`: `/**/ typeof handle === 'function' && handle({...});`.
+Like in Express, the callback keeps only letters, digits, `_`, `$`, `.`, `[`
+and `]`, and `X-Content-Type-Options: nosniff` is set.
 
 #### `res.sendStatus(code)`
 
@@ -719,6 +727,8 @@ res.type("json");        // application/json; charset=utf-8
 res.type(".html");       // text/html; charset=utf-8
 res.type("image/png");
 ```
+
+`res.contentType(type)` is the same method, as in Express.
 
 #### `res.vary(field)`
 
@@ -985,6 +995,7 @@ Set with `app.set(name, value)`, `new Pype({ name: value })`, `app.enable` or
 | `"etag"`             | `"weak"`                                 | `ETag` headers of `res.send()`: `"weak"` or `true`, `"strong"`, `false` for none, or a function `(body, encoding) => etag`, which gets the body as a `Buffer`. |
 | `"json spaces"`      | `undefined`                              | Indentation for `res.json()`. |
 | `"json replacer"`    | `undefined`                              | `JSON.stringify` replacer for `res.json()`. |
+| `"jsonp callback name"` | `"callback"`                           | Query parameter with the callback of `res.jsonp()`. |
 | `"json escape"`      | `undefined`                              | `true` escapes `<`, `>` and `&` in `res.json()` as `\u003c`, `\u003e` and `\u0026`, so JSON embedded in HTML can't close a `<script>` tag. |
 | `"x-powered-by"`     | `false`                                  | `true` adds `X-Powered-By: Pype` to every response. Express turns it on by default. |
 | `"strict routing"`   | `false`                                  | `true` makes a trailing slash part of the path: `/users/` and `/users` are different routes. Applies to every router in the app. |
@@ -1223,7 +1234,7 @@ Compatibility at a glance:
 | `"etag"`, `"json escape"`, `"json spaces"`, `"json replacer"` | Same values and results |
 | `"x-powered-by"` | Off by default |
 | Default 404 and error responses | JSON instead of HTML |
-| `res.jsonp()`, `app.use(otherApp)` | Not implemented |
+| `app.use(otherApp)` | Not implemented |
 
 Differences:
 
@@ -1249,7 +1260,7 @@ Differences:
   `/files/*` (`req.params["*"]`), where Express 5 uses `{/:id}` and
   `/*name`. The `*` also matches an empty rest.
 - Not implemented: several parameters in one segment (`/:from-:to`, which
-  throws), mounting another app with `app.use(otherApp)` and `res.jsonp()`.
+  throws) and mounting another app with `app.use(otherApp)`.
 
 ## Production notes
 

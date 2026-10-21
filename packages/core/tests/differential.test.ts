@@ -33,6 +33,7 @@ const HEADERS = [
   "set-cookie",
   "allow",
   "x-test",
+  "x-content-type-options",
 ];
 
 type Kind = "express" | "pype";
@@ -1067,6 +1068,40 @@ describe("etag and json settings match Express", () => {
   it("rejects an unknown etag value like Express", () => {
     expect(() => express().set("etag", "medium")).toThrow("unknown value for etag function: medium");
     expect(() => new Pype().set("etag", "medium")).toThrow("unknown value for etag function: medium");
+  });
+});
+
+describe("res.jsonp() and res.contentType() match Express", () => {
+  const define = (app: any) => {
+    app.get("/jsonp", (_req: any, res: any) => res.jsonp({ html: "<b>&</b>", line: "a\u2028b\u2029c", n: 1 }));
+    app.get("/jsonp-undefined", (_req: any, res: any) => res.jsonp(undefined));
+    app.get("/jsonp-typed", (_req: any, res: any) => res.type("text/plain").jsonp([1, 2]));
+    app.get("/jsonp-status", (_req: any, res: any) => res.status(201).jsonp("str"));
+    app.get("/content-type/:value", (req: any, res: any) => res.contentType(req.params.value).send("x"));
+  };
+
+  it.each<[string, Record<string, unknown>]>([
+    ["defaults", {}],
+    ["a custom callback name and json escape", { "jsonp callback name": "cb", "json escape": true, "json spaces": 2 }],
+  ])("%s", async (_name, settings) => {
+    const pair = await startPair(define, settings);
+    try {
+      for (const query of [
+        "",
+        "?callback=handle",
+        "?cb=handle",
+        "?callback=",
+        "?callback=a.b[0]",
+        "?callback=alert(1)//<script>",
+        "?callback=one&callback=two",
+        "?callback[]=x",
+      ]) {
+        for (const path of ["/jsonp", "/jsonp-undefined", "/jsonp-typed", "/jsonp-status"]) await same(path + query, {}, pair);
+      }
+      for (const value of ["json", "html", "text%2Fplain", "png", "unknown-ext"]) await same(`/content-type/${value}`, {}, pair);
+    } finally {
+      await Promise.all([pair.express.close(), pair.pype.close()]);
+    }
   });
 });
 

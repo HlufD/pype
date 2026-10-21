@@ -554,8 +554,9 @@ see [Trust proxy](#trust-proxy).
 
 `Response` extends `ServerResponse<Request>`. Header helpers (`set`, `get`,
 `append`, `type`, `vary`, `location`, `links`, `attachment`, `cookie`,
-`clearCookie`, `status`) only change headers and return `this`. Four methods
-send the response: `send`, `json`, `redirect` and `sendFile`.
+`clearCookie`, `status`) only change headers and return `this`; `contentType`
+is an alias of `type`. Five methods send the response: `send`, `json`,
+`jsonp`, `redirect` and `sendFile`.
 
 #### `send()`
 
@@ -869,7 +870,6 @@ before and after.
   per-router `caseSensitive` and `strict` options.
 - No several params in one segment, routers mounted on a RegExp, or mounting
   another app with `app.use(otherApp)`.
-- No `res.jsonp`.
 
 ## Background
 

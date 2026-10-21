@@ -197,6 +197,37 @@ export class Response extends ServerResponse<Request> {
   }
 
   /**
+   * Sends JSON, or JSONP when the query has a callback, like Express:
+   * `?callback=fn` (the `"jsonp callback name"` setting) answers
+   * `/**\/ typeof fn === 'function' && fn(<json>);` as `text/javascript`.
+   * The callback name keeps only letters, digits, `_`, `$`, `.`, `[` and
+   * `]`, and the leading comment defeats "Rosetta Flash" attacks.
+   */
+  jsonp(data: any): this {
+    let body = this.stringify(data);
+    let callback = this.req.query?.[this.app?.settings["jsonp callback name"] ?? "callback"];
+
+    if (!this.get("Content-Type")) {
+      this.set("X-Content-Type-Options", "nosniff");
+      this.set("Content-Type", "application/json");
+    }
+
+    if (Array.isArray(callback)) callback = callback[0];
+
+    if (typeof callback === "string" && callback.length !== 0) {
+      this.set("X-Content-Type-Options", "nosniff");
+      this.set("Content-Type", "text/javascript");
+
+      const name = callback.replace(/[^[\]\w$.]/g, "");
+      // U+2028 and U+2029 are valid in JSON but end a line in older JavaScript.
+      const json = body === undefined ? "" : body.replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+      body = `/**/ typeof ${name} === 'function' && ${name}(${json});`;
+    }
+
+    return this.send(body);
+  }
+
+  /**
    * `JSON.stringify` with the app's JSON settings. With `"json escape"`,
    * `<`, `>` and `&` become `\u003c`, `\u003e` and `\u0026`, so the JSON
    * can't close a `<script>` tag it is embedded in, like Express 5.
@@ -258,6 +289,11 @@ export class Response extends ServerResponse<Request> {
 
     const mime = lookupMime(value);
     return this.set("Content-Type", mime ? contentType(mime) : "application/octet-stream");
+  }
+
+  /** Same as {@link Response.type}, like Express's `res.contentType()`. */
+  contentType(value: string) {
+    return this.type(value);
   }
 
   /**

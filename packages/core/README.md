@@ -128,7 +128,9 @@ app.use((req, res) => {
 ```
 
 Calling `next()` twice from the same handler only logs a warning; the second
-call is ignored.
+call is ignored. Express runs the following layer again instead, which
+usually ends in a "headers already sent" error. If the second call passes an
+error, the warning includes it, so it still shows up in your logs.
 
 ### Route paths
 

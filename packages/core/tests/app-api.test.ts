@@ -456,3 +456,34 @@ describe("regular expression paths", () => {
     expect(mount.lastIndex).toBe(0);
   });
 });
+
+describe("a second next() call", () => {
+  it("is ignored, and the warning shows an error passed to it", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const failure = new Error("lost?");
+    let laterLayers = 0;
+    const app = new Pype({ env: "test" });
+    app.get("/twice", (_req: Request, _res: Response, next: NextFunction) => {
+      next();
+      next();
+    });
+    app.get("/twice-error", (_req: Request, _res: Response, next: NextFunction) => {
+      next();
+      next(failure);
+    });
+    app.use((_req: Request, res: Response) => res.send("once"));
+    app.use(() => laterLayers++);
+    const api = await start(app);
+
+    try {
+      expect((await api.send("/twice")).text).toBe("once");
+      expect((await api.send("/twice-error")).text).toBe("once");
+      expect(laterLayers).toBe(0);
+      expect(warn).toHaveBeenNthCalledWith(1, "[warn]: next() called multiple times");
+      expect(warn).toHaveBeenNthCalledWith(2, expect.stringContaining("ignoring the error"), failure);
+    } finally {
+      warn.mockRestore();
+      await api.close();
+    }
+  });
+});

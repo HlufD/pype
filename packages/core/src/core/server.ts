@@ -873,7 +873,13 @@ function once(fn: (err?: any) => void) {
   let called = false;
   return (err?: any) => {
     if (called) {
-      console.warn("[warn]: next() called multiple times");
+      // Unlike Express, the extra call doesn't run more layers; an error it
+      // carries is still printed so it isn't lost.
+      if (err && err !== "route" && err !== "router") {
+        console.warn("[warn]: next() called multiple times, ignoring the error passed to it:", err);
+      } else {
+        console.warn("[warn]: next() called multiple times");
+      }
       return;
     }
     called = true;

@@ -81,6 +81,9 @@ export class Request extends IncomingMessage {
    * interchangeable.
    */
   get(header: string): string | string[] | undefined {
+    // Express's errors, for code written against them.
+    if (!header) throw new TypeError("name argument is required to req.get");
+    if (typeof header !== "string") throw new TypeError("name must be a string to req.get");
     const name = header.toLowerCase();
 
     if (name === "referer" || name === "referrer") {
@@ -249,10 +252,11 @@ export class Request extends IncomingMessage {
     const hostname = this.hostname;
     if (!hostname) return [];
 
-    if (isIP(hostname.replace(/^\[|\]$/g, ""))) return [];
-
+    // Like Express: an IPv4 address is one part, so it only counts with a
+    // "subdomain offset" of 0.
     const offset = this.app?.settings["subdomain offset"] ?? 2;
-    return hostname.split(".").reverse().slice(offset);
+    const parts = isIP(hostname) ? [hostname] : hostname.split(".").reverse();
+    return parts.slice(offset);
   }
 
   /** Whether `X-Requested-With` is `XMLHttpRequest`. */
@@ -269,7 +273,8 @@ export class Request extends IncomingMessage {
     const method = this.method;
     const status = this.res.statusCode;
 
-    if (method !== "GET" && method !== "HEAD") return false;
+    // Like Express, QUERY is safe and cacheable too.
+    if (method !== "GET" && method !== "HEAD" && method !== "QUERY") return false;
 
     if (
       this.headers["if-none-match"] === undefined &&

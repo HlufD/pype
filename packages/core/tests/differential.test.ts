@@ -1657,6 +1657,92 @@ describe("app.request and app.response match Express", () => {
   });
 });
 
+describe("small request and response details match Express", () => {
+  let pair: Pair;
+
+  beforeAll(async () => {
+    pair = await startPair((app, kind) => {
+      app.set("subdomain offset", 0);
+      app.get("/cookie", (req: any, res: any) =>
+        res.cookie("a", "1", { maxAge: 1000, ...(req.query.expires ? { expires: new Date(0) } : {}), domain: "x.test" }).end(),
+      );
+      app.get("/charset", (req: any, res: any) => res.set("Content-Type", String(req.query.type)).send("hey"));
+      app.get("/type/:file", (req: any, res: any) => res.type(req.params.file).end());
+      app.get("/subdomains", (req: any, res: any) => res.json(req.subdomains));
+      app.all("/fresh", (_req: any, res: any) => res.set("ETag", '"v1"').send("body"));
+      app.get("/get", (req: any, res: any) => {
+        try {
+          req.get(req.query.number ? 3 : undefined);
+          res.send("no error");
+        } catch (error) {
+          res.send((error as Error).message);
+        }
+      });
+      app.get("/vary", (_req: any, res: any) => {
+        try {
+          res.vary();
+          res.send("no error");
+        } catch (error) {
+          res.send((error as Error).message);
+        }
+      });
+      app.use((_req: any, res: any, next: any) => {
+        res.writeHead(200);
+        next();
+      });
+      // As in Express's test: the router answers OPTIONS when it is done,
+      // before the error middleware after it.
+      const router = kit(kind).Router();
+      router.get("/users", () => {});
+      app.use(router);
+      app.use((_err: any, _req: any, res: any, _next: any) => res.end("error middleware"));
+    });
+  });
+
+  afterAll(() => Promise.all([pair.express.close(), pair.pype.close()]));
+
+  it.each([
+    "/cookie",
+    "/cookie?expires=1",
+    "/charset?type=text/plain;%20foo=bar",
+    "/charset?type=text/plain;%20charset=latin1;%20foo=bar",
+    "/type/app.js",
+    "/type/mod.mjs",
+    "/get",
+    "/get?number=1",
+    "/vary",
+  ])("GET %s", async (path) => {
+    const [fromExpress, fromPype] = await both(path, {}, pair);
+    // Expires depends on the time of the request.
+    const cookie = (reply: Reply) => [reply.headers["set-cookie"]].flat().map((c) => c?.replace(/Expires=[^;]+/, "Expires=…"));
+    expect(cookie(fromPype)).toEqual(cookie(fromExpress));
+    expect(fromPype.headers["content-type"]).toBe(fromExpress.headers["content-type"]);
+    expect(fromPype.text).toBe(fromExpress.text);
+  });
+
+  it.each(["127.0.0.1", "[::1]", "a.b.example.com"])("req.subdomains with Host %s", (host) =>
+    same("/subdomains", { headers: { Host: host } }, pair),
+  );
+
+  it("a QUERY request can be fresh", () => same("/fresh", { method: "QUERY", headers: { "If-None-Match": '"v1"' } }, pair));
+
+  it("automatic OPTIONS after the headers were sent goes to error middleware", () =>
+    same("/users", { method: "OPTIONS" }, pair),
+  );
+
+  it("app.listen() passes server errors to its callback", async () => {
+    const taken = await start(new Pype());
+    try {
+      for (const app of [express() as any, new Pype()]) {
+        const error = await new Promise<Error | undefined>((resolve) => app.listen(taken.port, "127.0.0.1", resolve));
+        expect((error as NodeJS.ErrnoException)?.code).toBe("EADDRINUSE");
+      }
+    } finally {
+      await taken.close();
+    }
+  });
+});
+
 describe("every HTTP method matches Express", () => {
   let pair: Pair;
   const methods = ["PURGE", "PROPFIND", "SEARCH", "TRACE", "QUERY", "LOCK", "MKCOL", "M-SEARCH", "REPORT"];

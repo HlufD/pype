@@ -212,19 +212,21 @@ export class Pype {
    * Starts an HTTP server that uses Pype's request and response classes.
    * Route conflicts are reported here, before the first request arrives.
    *
+   * Takes the arguments of `server.listen()`, like Express. The callback is
+   * called once: when the server listens, or with the error when it can't
+   * (a port in use, for example).
+   *
    * @param port - Port to listen on, `0` picks a free one.
    * @param hostname - Interface to bind, e.g. `"127.0.0.1"` behind a proxy.
-   * @param callback - Called once the server is listening.
+   * @param backlog - Most pending connections.
+   * @param callback - Called once the server is listening, or with an error.
    * @returns The underlying `http.Server`, e.g. for graceful shutdown.
    * @throws When routes conflict, e.g. different param names at one position.
    */
-  listen(port: number, callback?: () => void): Server;
-  listen(port: number, hostname: string, callback?: () => void): Server;
-  listen(
-    port: number,
-    hostnameOrCallback?: string | (() => void),
-    callback?: () => void,
-  ): Server {
+  listen(port?: number, callback?: (err?: Error) => void): Server;
+  listen(port: number, hostname: string, callback?: (err?: Error) => void): Server;
+  listen(port: number, hostname: string, backlog: number, callback?: (err?: Error) => void): Server;
+  listen(...args: any[]): Server {
     this.compile();
 
     const server = createServer(
@@ -233,10 +235,18 @@ export class Pype {
       this.handler,
     );
 
-    if (typeof hostnameOrCallback === "string") {
-      return server.listen(port, hostnameOrCallback, callback);
+    const callback = args[args.length - 1];
+    if (typeof callback === "function") {
+      let called = false;
+      const done = (err?: Error) => {
+        if (called) return;
+        called = true;
+        callback(err);
+      };
+      args[args.length - 1] = done;
+      server.once("error", done);
     }
-    return server.listen(port, hostnameOrCallback);
+    return server.listen(...args);
   }
 
   /** The app as a request listener; the app itself works as one too. */
@@ -687,8 +697,14 @@ export class Pype {
     let ranGroups: Set<object> | undefined;
     const routerDone = (router: PypeRouter | undefined) => {
       const methods = router && optionsMethods?.get(router);
-      if (!methods?.size || res.headersSent) return false;
-      sendOptions(res, [...methods].sort().join(", "));
+      if (!methods?.size) return false;
+      // Like Express, when the response can't be sent any more (headers
+      // already sent), the error goes to the error middleware.
+      try {
+        sendOptions(res, [...methods].sort().join(", "));
+      } catch (error) {
+        next(error);
+      }
       return true;
     };
     // Like Express, a long run of layers that call next() synchronously

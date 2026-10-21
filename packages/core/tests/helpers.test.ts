@@ -118,10 +118,11 @@ describe("content types", () => {
     expect(mediaTypeOf(undefined)).toBeNull();
   });
 
-  it("setCharset replaces the charset and sorts parameters like Express", () => {
+  it("setCharset replaces the charset in place or adds it last, like Express 5", () => {
     expect(setCharset("text/html", "utf-8")).toBe("text/html; charset=utf-8");
-    expect(setCharset("Text/Plain; Format=flowed; charset=latin1", "utf-8")).toBe("text/plain; charset=utf-8; format=flowed");
-    expect(setCharset('text/plain; x="a b"', "utf-8")).toBe('text/plain; charset=utf-8; x="a b"');
+    expect(setCharset("Text/Plain; Charset=latin1; Format=flowed", "utf-8")).toBe("text/plain; charset=utf-8; format=flowed");
+    expect(setCharset("text/plain; format=flowed; charset=latin1", "utf-8")).toBe("text/plain; format=flowed; charset=utf-8");
+    expect(setCharset('text/plain; x="a b"', "utf-8")).toBe('text/plain; x="a b"; charset=utf-8');
   });
 
   it("matchContentType supports extensions, wildcards and suffixes", () => {

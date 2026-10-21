@@ -437,7 +437,9 @@ export class Response extends ServerResponse<Request> {
    * @throws When a field isn't a valid header name.
    */
   vary(field: string | string[]) {
-    if (!field || (Array.isArray(field) && field.length === 0)) return this;
+    // Like the vary package Express uses.
+    if (!field) throw new TypeError("field argument is required");
+    if (Array.isArray(field) && field.length === 0) return this;
 
     const fields = Array.isArray(field) ? field : parseTokenList(String(field));
     for (const name of fields) {

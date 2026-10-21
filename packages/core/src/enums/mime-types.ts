@@ -17,8 +17,9 @@ export const MIME_TYPES: Record<string, string> = {
   map: "application/json",
   webmanifest: "application/manifest+json",
 
-  js: "application/javascript",
-  mjs: "application/javascript",
+  // Like mime-types 3, which Express 5 uses (RFC 9239).
+  js: "text/javascript",
+  mjs: "text/javascript",
   cjs: "application/javascript",
   ts: "application/typescript",
   jsx: "application/javascript",

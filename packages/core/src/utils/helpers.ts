@@ -63,10 +63,12 @@ function serializeCookie(
 
   let cookie = `${name}=${encoded}`;
 
+  // Like Express, maxAge also sets Expires, instead of the expires option,
+  // in the attribute order of the cookie package.
+  let expires = options.expires;
   if (options.maxAge != null) {
-    const maxAge = Math.floor(options.maxAge / 1000);
-    cookie += `; Max-Age=${maxAge}`;
-    cookie += `; Expires=${new Date(Date.now() + options.maxAge).toUTCString()}`;
+    cookie += `; Max-Age=${Math.floor(options.maxAge / 1000)}`;
+    expires = new Date(Date.now() + options.maxAge);
   }
 
   if (options.domain) cookie += `; Domain=${options.domain}`;
@@ -74,7 +76,7 @@ function serializeCookie(
   if (options.path) cookie += `; Path=${options.path}`;
   else cookie += `; Path=/`;
 
-  if (options.expires) cookie += `; Expires=${options.expires.toUTCString()}`;
+  if (expires) cookie += `; Expires=${expires.toUTCString()}`;
 
   if (options.httpOnly) cookie += `; HttpOnly`;
 
@@ -460,10 +462,12 @@ function computeCharset(type: string, charset: string): string {
     params[key] = value;
   }
 
+  // Like content-type 2, which Express uses: the parameters keep their
+  // order, charset replaces an existing one or comes last.
   params.charset = charset;
 
   let result = base.trim().toLowerCase();
-  for (const key of Object.keys(params).sort()) {
+  for (const key of Object.keys(params)) {
     const value = params[key];
     result += `; ${key}=${TOKEN.test(value) ? value : `"${value.replace(/["\\]/g, "\\$&")}"`}`;
   }

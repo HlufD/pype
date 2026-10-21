@@ -82,7 +82,7 @@ beforeAll(async () => {
       .send("ok");
   });
   app.get("/vary", (_req: Request, res: Response) => {
-    res.vary("").vary("Accept, Origin").vary("origin, Cookie").send("ok");
+    res.vary([]).vary("Accept, Origin").vary("origin, Cookie").send("ok");
   });
   app.get("/vary-star", (_req: Request, res: Response) => {
     res.vary("Accept").vary("*").vary("Origin").send("ok");
@@ -276,7 +276,7 @@ describe("cookies", () => {
   it("serializes every attribute", async () => {
     const cookies = (await api.send("/cookies/set")).headers["set-cookie"]!;
     expect(cookies[0]).toMatch(
-      /^prefs=j%3A%7B%22dark%22%3Atrue%7D; Max-Age=60; Expires=.+; Domain=example.com; Path=\/app; HttpOnly; Secure; Partitioned; Priority=High; SameSite=Lax$/,
+      /^prefs=j%3A%7B%22dark%22%3Atrue%7D; Max-Age=60; Domain=example.com; Path=\/app; Expires=.+; HttpOnly; Secure; Partitioned; Priority=High; SameSite=Lax$/,
     );
     expect(cookies[1]).toBe("strict=1; Path=/; SameSite=Strict");
     expect(cookies[2]).toBe("old=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT");

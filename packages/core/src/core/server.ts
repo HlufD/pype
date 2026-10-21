@@ -7,7 +7,7 @@ import {
 } from "http";
 import { HTTP_METHODS } from "../enums/methods.enum";
 import { RouteHandler } from "../types/route-handler";
-import { RouteNode } from "../utils/Trie-Route";
+import { lowerAscii, RouteNode } from "../utils/Trie-Route";
 import {
   HandlerParam,
   Layer,
@@ -65,6 +65,8 @@ export class Pype {
   private fixedLayers: Layer[] = [];
   private fixedIndices: number[] = [];
   private compiledVersion = -1;
+  /** The `"case sensitive routing"` setting the routing table was built with. */
+  private caseSensitive = true;
 
   /**
    * @param settings - Initial settings, applied with {@link Pype.set}.
@@ -75,6 +77,8 @@ export class Pype {
     this.set("trust proxy", false);
     this.set("query parser", "simple");
     this.set("subdomain offset", 2);
+    // Unlike Express, matching is case-sensitive unless this is turned off.
+    this.set("case sensitive routing", true);
     this.set("json spaces", undefined);
     this.set("json replacer", undefined);
     this.set("view", View);
@@ -387,10 +391,11 @@ export class Pype {
    * one trie entry and run in registration order.
    */
   private compile() {
-    if (this.compiledVersion === routingVersion()) return;
+    const caseSensitive = this.enabled("case sensitive routing");
+    if (this.compiledVersion === routingVersion() && this.caseSensitive === caseSensitive) return;
 
     const layers = this.router.compile();
-    const routes = createRouteTable();
+    const routes = createRouteTable(caseSensitive);
     const routeLayers = new Map<AnyHandler[], RouteLayer[]>();
     const entries = new Map<string, AnyHandler[]>();
 
@@ -399,7 +404,9 @@ export class Pype {
       if (layer.kind !== "route" || layer.pattern) continue;
 
       for (const method of layer.methods) {
-        const key = `${method} ${normalizeBase(layer.fullPath) || "/"}`;
+        // Paths that only differ in case share an entry when case is ignored.
+        const path = normalizeBase(layer.fullPath) || "/";
+        const key = `${method} ${caseSensitive ? path : lowerAscii(path)}`;
         const existing = entries.get(key);
 
         if (existing) {
@@ -427,6 +434,7 @@ export class Pype {
     });
     this.fixedLayers = this.fixedIndices.map((index) => layers[index]);
     this.compiledVersion = routingVersion();
+    this.caseSensitive = caseSensitive;
   }
 
   /**
@@ -518,7 +526,7 @@ export class Pype {
             continue;
           }
 
-          if (optionsMethods && !layer.methods.includes(HTTP_METHODS.OPTIONS) && routeMatchesPath(layer, req.path, pathLayers!)) {
+          if (optionsMethods && !layer.methods.includes(HTTP_METHODS.OPTIONS) && routeMatchesPath(layer, req.path, pathLayers!, this.caseSensitive)) {
             const router = layer.routers[layer.routers.length - 1];
             if (!optionsMethods.has(router)) optionsMethods.set(router, new Set());
             const methods = optionsMethods.get(router)!;
@@ -532,7 +540,7 @@ export class Pype {
             if (!handlesMethod(layer, method)) continue;
             let found: PatternMatch | null;
             try {
-              found = matchPattern(layer.pattern, relativePath(req.path, layer.fullPath));
+              found = matchPattern(layer.pattern, relativePath(req.path, layer.fullPath, this.caseSensitive));
             } catch (error) {
               err = error;
               continue;
@@ -551,15 +559,15 @@ export class Pype {
           return this.runRoute(req, res, layer, params, method, getParamCalls, next);
         }
 
-        if (!matchesPrefix(req.path, layer.path)) continue;
+        if (!matchesPrefix(req.path, layer.path, this.caseSensitive)) continue;
 
         let mounted: PatternMatch | null = null;
         try {
           if (layer.pattern) {
-            mounted = matchMount(layer.pattern, relativePath(req.path, layer.path));
+            mounted = matchMount(layer.pattern, relativePath(req.path, layer.path, this.caseSensitive));
             if (!mounted) continue;
           } else if (layer.keys.length > 0) {
-            mounted = { params: pickParams(mountParams(req.path, layer.path), layer.keys), path: "" };
+            mounted = { params: pickParams(mountParams(req.path, layer.path, this.caseSensitive), layer.keys), path: "" };
           }
         } catch (error) {
           err = err || error;
@@ -686,7 +694,7 @@ export class Pype {
     this.enterParams(req, res, layer, params, Object.keys(params), path, getParamCalls, (error) => {
       if (error) return next(error);
 
-      mount(req, layer.path);
+      mount(req, layer.path, this.caseSensitive);
       if (mounted) mount(req, mounted.path);
 
       const done = once((error?: any) => {
@@ -740,7 +748,7 @@ export class Pype {
         // Each mount path's own segments, so a name used at two levels keeps both values.
         let own: Record<string, string> = {};
         try {
-          if (scope.keys.length > 0) own = pickParams(mountParams(requestPath, scope.path), scope.keys);
+          if (scope.keys.length > 0) own = pickParams(mountParams(requestPath, scope.path, this.caseSensitive), scope.keys);
         } catch (decodeError) {
           return done(decodeError);
         }
@@ -772,7 +780,7 @@ export class Pype {
   ) {
     const { url, path, baseUrl } = req;
     req.route = { path: layer.routePath, method };
-    mount(req, layer.baseUrl);
+    mount(req, layer.baseUrl, this.caseSensitive);
 
     const leave = (error?: any) => {
       req.url = url;
@@ -835,10 +843,11 @@ export class Pype {
 }
 
 /** Creates the route trie with Express's slash handling. */
-function createRouteTable() {
+function createRouteTable(caseSensitive = true) {
   return new RouteNode({
     ignoreDuplicateSlashes: true,
     ignoreTrailingSlash: true,
+    caseSensitive,
   });
 }
 
@@ -1028,15 +1037,15 @@ function decodeParam(value: string | undefined) {
 }
 
 /** The request path below a mount path. */
-function relativePath(path: string, mountPath: string) {
-  return path.slice((matchedPrefix(path, mountPath) ?? normalizeBase(mountPath)).length) || "/";
+function relativePath(path: string, mountPath: string, caseSensitive: boolean) {
+  return path.slice((matchedPrefix(path, mountPath, caseSensitive) ?? normalizeBase(mountPath)).length) || "/";
 }
 
 /** Whether a route's path matches the request, whatever the method; for automatic OPTIONS. */
-function routeMatchesPath(layer: RouteLayer, path: string, treeLayers: Set<RouteLayer>) {
+function routeMatchesPath(layer: RouteLayer, path: string, treeLayers: Set<RouteLayer>, caseSensitive: boolean) {
   if (!layer.pattern) return treeLayers.has(layer);
   try {
-    return matchPattern(layer.pattern, relativePath(path, layer.fullPath)) !== null;
+    return matchPattern(layer.pattern, relativePath(path, layer.fullPath, caseSensitive)) !== null;
   } catch {
     return false;
   }
@@ -1096,29 +1105,34 @@ function normalizeBase(base: string) {
 }
 
 /** `/some` matches `/some` and `/some/...`, but not `/something`. */
-function matchesPrefix(requestPath: string, prefix: string) {
-  return matchedPrefix(requestPath, prefix) !== null;
+function matchesPrefix(requestPath: string, prefix: string, caseSensitive: boolean) {
+  return matchedPrefix(requestPath, prefix, caseSensitive) !== null;
 }
 
 /**
  * The start of `requestPath` that a mount path matches, compared segment by
  * segment so that a `:param` segment matches any one segment: `/r/:org`
  * matches `/r/acme/42` as `/r/acme`. `null` when it doesn't match.
+ *
+ * @param caseSensitive - `false` ignores ASCII case. The result is always
+ * the request's own text, so `req.baseUrl` keeps its case like in Express.
  */
-function matchedPrefix(requestPath: string, prefix: string): string | null {
-  const base = normalizeBase(prefix);
+function matchedPrefix(requestPath: string, prefix: string, caseSensitive = true): string | null {
+  const base = caseSensitive ? normalizeBase(prefix) : lowerAscii(normalizeBase(prefix));
+  const path = caseSensitive ? requestPath : lowerAscii(requestPath);
   if (!base.includes("/:")) {
-    return base === "" || requestPath === base || requestPath.startsWith(base + "/") ? base : null;
+    const matches = base === "" || path === base || path.startsWith(base + "/");
+    return matches ? requestPath.slice(0, base.length) : null;
   }
 
   const expected = base.split("/");
-  const actual = requestPath.split("/");
+  const actual = path.split("/");
   if (actual.length < expected.length) return null;
   for (let i = 0; i < expected.length; i++) {
     const matches = expected[i].startsWith(":") ? actual[i] !== "" : actual[i] === expected[i];
     if (!matches) return null;
   }
-  return actual.slice(0, expected.length).join("/");
+  return requestPath.split("/").slice(0, expected.length).join("/");
 }
 
 /**
@@ -1126,8 +1140,8 @@ function matchedPrefix(requestPath: string, prefix: string): string | null {
  *
  * @throws A 400 error when a param has a malformed escape.
  */
-function mountParams(requestPath: string, mountPath: string): Record<string, string> {
-  const segments = matchedPrefix(requestPath, mountPath)!.split("/");
+function mountParams(requestPath: string, mountPath: string, caseSensitive: boolean): Record<string, string> {
+  const segments = matchedPrefix(requestPath, mountPath, caseSensitive)!.split("/");
   const params: Record<string, string> = {};
   normalizeBase(mountPath).split("/").forEach((segment, i) => {
     if (segment.startsWith(":")) params[segment.slice(1).replace(/\?$/, "")] = decodeParam(segments[i])!;
@@ -1152,8 +1166,8 @@ function mergeParams(enabled: boolean, params: Record<string, string>, parent?: 
 }
 
 /** Strips `base` from the front of `req.url` and `req.path` and appends it to `req.baseUrl`. */
-function mount(req: Request, base: string) {
-  const prefix = matchedPrefix(req.path, base) ?? normalizeBase(base);
+function mount(req: Request, base: string, caseSensitive = true) {
+  const prefix = matchedPrefix(req.path, base, caseSensitive) ?? normalizeBase(base);
   if (!prefix) return;
 
   req.baseUrl = normalizeBase(req.baseUrl + prefix);

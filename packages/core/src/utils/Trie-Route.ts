@@ -27,6 +27,8 @@ interface Options {
   ignoreDuplicateSlashes?: boolean;
   /** Treat `/users/` like `/users`. */
   ignoreTrailingSlash?: boolean;
+  /** `false` matches static path text ignoring ASCII case; param values keep theirs. Default `true`. */
+  caseSensitive?: boolean;
 }
 
 /** What a node stores for one HTTP method. */
@@ -43,6 +45,14 @@ type Token =
 
 /** Char code of `"/"`. */
 const SLASH = 47;
+
+/**
+ * Lowercases ASCII letters only, so the result has the same length and a
+ * position in it is the same position in `text`.
+ */
+export function lowerAscii(text: string) {
+  return /[A-Z]/.test(text) ? text.replace(/[A-Z]+/g, (letters) => letters.toLowerCase()) : text;
+}
 
 /**
  * A node of the radix tree.
@@ -172,14 +182,16 @@ class RouteNode {
    */
   match(url: string, method: HTTP_METHODS): MatchResult | null {
     const path = this.normalize(url);
+    // Compared folded, while param values are cut from `path` with their case.
+    const folded = this.fold(path);
 
-    const staticEntry = this.staticRoutes.get(path)?.get(method);
+    const staticEntry = this.staticRoutes.get(folded)?.get(method);
     if (staticEntry) {
       return { handlers: staticEntry.handlers, params: {}, route: staticEntry.route };
     }
 
     const values: string[] = [];
-    const node = this.find(this.root, path, 0, method, values);
+    const node = this.find(this.root, folded, 0, method, values, path);
     if (!node) return null;
 
     const entry = node.entries.get(method)!;
@@ -199,6 +211,7 @@ class RouteNode {
    * remainder, so `/files/` matches `/files/*` when trailing slashes are kept.
    *
    * @param values - Collects raw param values, popped again on backtracking.
+   * @param source - `path` before case folding, where the values are cut from.
    * @returns The node holding the route for `method`, or `null`.
    */
   private find(
@@ -207,6 +220,7 @@ class RouteNode {
     index: number,
     method: string,
     values: string[],
+    source: string,
   ): Node | null {
     if (index === path.length) {
       if (node.entries.has(method)) return node;
@@ -228,6 +242,7 @@ class RouteNode {
         index + child.prefix.length,
         method,
         values,
+        source,
       );
       if (found) return found;
     }
@@ -238,8 +253,8 @@ class RouteNode {
       if (end === -1) end = path.length;
 
       if (end > index) {
-        values.push(path.slice(index, end));
-        const found = this.find(param, path, end, method, values);
+        values.push(source.slice(index, end));
+        const found = this.find(param, path, end, method, values, source);
         if (found) return found;
         values.pop();
       }
@@ -247,7 +262,7 @@ class RouteNode {
 
     const wildcard = node.wildcardChild;
     if (wildcard && wildcard.entries.has(method)) {
-      values.push(path.slice(index));
+      values.push(source.slice(index));
       return wildcard;
     }
 
@@ -266,7 +281,7 @@ class RouteNode {
 
     for (const token of tokens) {
       if (token.type === "static") {
-        node = this.insertStatic(node, token.value);
+        node = this.insertStatic(node, this.fold(token.value));
       } else if (token.type === "param") {
         if (node.paramChild && node.paramName !== token.name) {
           throw new Error(
@@ -294,8 +309,9 @@ class RouteNode {
     node.buildParams = compileParamsBuilder(names);
 
     if (tokens.every((token) => token.type === "static")) {
-      let methods = this.staticRoutes.get(path);
-      if (!methods) this.staticRoutes.set(path, (methods = new Map()));
+      const key = this.fold(path);
+      let methods = this.staticRoutes.get(key);
+      if (!methods) this.staticRoutes.set(key, (methods = new Map()));
       methods.set(method, entry);
     }
   }
@@ -370,6 +386,11 @@ class RouteNode {
     if (staticPart) tokens.push({ type: "static", value: staticPart });
 
     return tokens.filter((t) => t.type !== "static" || t.value !== "");
+  }
+
+  /** Lowercases static path text when matching ignores case. */
+  private fold(text: string) {
+    return this.config.caseSensitive === false ? lowerAscii(text) : text;
   }
 
   /** Applies the duplicate and trailing slash options to a path. */

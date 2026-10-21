@@ -153,7 +153,11 @@ Rules:
   segment, and its name is made of letters, digits, `_` and `$` and doesn't
   start with a digit. Other forms, like `/:from-:to`, `/a-:id` or `/:`, throw
   when the route is registered.
-- Matching is case-sensitive.
+- Matching is case-sensitive by default. Turn it off with
+  `app.set("case sensitive routing", false)` to match like Express does by
+  default: `/Users/:id` then matches `/users/Ada`, and the param keeps its
+  case (`"Ada"`). Only the path text is compared ignoring case; RegExp paths
+  follow their own `i` flag.
 - Duplicate slashes and a trailing slash are ignored: `//users//42/` matches
   `/users/:id`.
 - Parameter values are URL-decoded (`/users/a%20b` gives `"a b"`). A value
@@ -972,6 +976,7 @@ Set with `app.set(name, value)`, `new Pype({ name: value })`, `app.enable` or
 | `"json spaces"`      | `undefined`                              | Indentation for `res.json()`. |
 | `"json replacer"`    | `undefined`                              | `JSON.stringify` replacer for `res.json()`. |
 | `"subdomain offset"` | `2`                                      | Number of dot-separated parts removed from the end of the host name for `req.subdomains`. |
+| `"case sensitive routing"` | `true`                             | `false` matches route and mount paths ignoring ASCII case, like Express's default. Applies to every router in the app. |
 | `"query parser"`     | `"simple"`                               | How `req.query` is parsed: `"simple"` (Node's `querystring`), `"extended"` (`qs` rules: nested objects and arrays), `false` (no parsing) or a function `(query) => object`, which gets `null` without a `?`. |
 | `"views"`            | `"<cwd>/views"`                          | Directory, or list of directories, with the views. |
 | `"view engine"`      | `undefined`                              | Extension for view names without one. |
@@ -1201,9 +1206,10 @@ Compatibility at a glance:
 | Body parsers, including compressed bodies and `extended: true` | Same results and errors |
 | Route matching | Most specific route wins, not the first registered |
 | Route syntax | Express 4 style `:id?` and `*`, not Express 5's `{/:id}` and `*name` |
+| Case sensitivity | Case-sensitive by default; `"case sensitive routing": false` for Express's default |
 | Duplicate and trailing slashes | Always ignored |
 | Default 404 and error responses | JSON instead of HTML |
-| `res.jsonp()`, `req.param()`, `app.use(otherApp)`, params in `use()` strings | Not implemented |
+| `res.jsonp()`, `req.param()`, `app.use(otherApp)` | Not implemented |
 
 Differences:
 
@@ -1211,6 +1217,9 @@ Differences:
   `:param`, then `*`) instead of the first registered. Routes with the same
   method and path still run in registration order.
 - Duplicate and trailing slashes are always ignored.
+- Routing is case-sensitive unless `"case sensitive routing"` is `false`;
+  Express ignores case by default. The setting covers every router in the
+  app, there is no per-router `caseSensitive` option.
 - The default 404 and error responses are JSON.
 - A second `next()` call from the same handler is ignored with a warning;
   Express continues with the following layer.
@@ -1222,10 +1231,8 @@ Differences:
   `/files/*` (`req.params["*"]`), where Express 5 uses `{/:id}` and
   `/*name`.
 - Not implemented: several parameters in one segment (`/:from-:to`, which
-  throws), parameters in `use()` string mount paths (use a RegExp), mounting
-  another app with `app.use(otherApp)`, `res.jsonp()`, `req.param()`, and the
-  `"case sensitive routing"`, `"strict routing"` and `"x-powered-by"`
-  settings.
+  throws), mounting another app with `app.use(otherApp)`, `res.jsonp()`,
+  `req.param()`, and the `"strict routing"` and `"x-powered-by"` settings.
 
 ## Production notes
 

@@ -487,3 +487,25 @@ describe("a second next() call", () => {
     }
   });
 });
+
+describe("case sensitive routing", () => {
+  it("is on by default and takes effect when changed later", async () => {
+    const app = new Pype({ env: "test" });
+    app.get("/Users/:id", (req: Request, res: Response) => res.json(req.params));
+    const api = await start(app);
+
+    try {
+      expect(app.enabled("case sensitive routing")).toBe(true);
+      expect((await api.send("/users/Ada")).status).toBe(404);
+
+      app.disable("case sensitive routing");
+      expect(await api.json("/USERS/Ada")).toEqual({ id: "Ada" });
+
+      app.enable("case sensitive routing");
+      expect((await api.send("/USERS/Ada")).status).toBe(404);
+      expect(await api.json("/Users/Ada")).toEqual({ id: "Ada" });
+    } finally {
+      await api.close();
+    }
+  });
+});

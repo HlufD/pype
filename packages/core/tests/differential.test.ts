@@ -641,6 +641,65 @@ describe("routing and params match Express", () => {
     ])("GET %s", (path) => same(path, {}, pair));
   });
 
+  describe.each([false, true])("case sensitive routing: %s", (caseSensitive) => {
+    let pair: Pair;
+
+    beforeAll(async () => {
+      pair = await startPair(
+        (app, kind) => {
+          const k = kit(kind);
+          // Express's routers have their own option, Pype's setting covers every router.
+          const router = k.Router({ caseSensitive });
+          const reply = (where: string) => (req: any, res: any) =>
+            res.json({ where, params: req.params, baseUrl: req.baseUrl, path: req.path, url: req.url });
+          app.get("/Users/:Name", reply("user"));
+          app.get(kind === "express" ? "/files/*rest" : "/files/*", (req: any, res: any) =>
+            res.json({ rest: [req.params.rest ?? req.params["*"]].flat().join("/") }),
+          );
+          app.get("/caf%C3%A9", reply("escaped"));
+          app.get("/twice", (req: any, _res: any, next: any) => ((req.order = ["lower"]), next()));
+          app.get("/TWICE", (req: any, res: any) => res.json({ order: [...(req.order ?? []), "upper"] }));
+          app.get(/^\/re\/ABC$/, reply("regexp"));
+          app.get(/^\/rei\/abc$/i, reply("regexp i"));
+          app.use("/Mw", (req: any, res: any, next: any) => (req.query.stop ? res.json({ baseUrl: req.baseUrl, url: req.url }) : next()));
+          router.get("/Item/:Id", reply("router item"));
+          router.use("/Deep", reply("router middleware"));
+          app.use("/Api/:Org", router);
+          app.put("/Only-Put", reply("put"));
+          // The default 404 pages differ.
+          app.use((req: any, res: any) => res.status(404).json({ notFound: req.path }));
+        },
+        { "case sensitive routing": caseSensitive },
+      );
+    });
+
+    afterAll(() => Promise.all([pair.express.close(), pair.pype.close()]));
+
+    it.each([
+      "/Users/Ada",
+      "/users/Ada",
+      "/USERS/ada",
+      "/files/A/b/C.TXT",
+      "/FILES/a",
+      "/caf%C3%A9",
+      "/CAF%c3%a9",
+      "/twice",
+      "/TWICE",
+      "/Twice",
+      "/re/ABC",
+      "/re/abc",
+      "/rei/ABC",
+      "/Mw/x?stop=1",
+      "/mw/X?stop=1",
+      "/Api/Acme/Item/7",
+      "/api/acme/item/7",
+      "/API/ACME/ITEM/Seven",
+      "/api/Acme/deep/More",
+    ])("GET %s", (path) => same(path, {}, pair));
+
+    it.each(["/only-put", "/Only-Put", "/ONLY-PUT"])("OPTIONS %s", (path) => same(path, { method: "OPTIONS" }, pair));
+  });
+
   it.each(["POST", "PUT", "OPTIONS", "HEAD"])("a param that fails to decode answers 400 for %s too", async (method) => {
     for (const path of ["/params/%ZZ", "/params/%", "/params/%E0%A4%A", "/params/a%20b"]) await same(path, { method });
   });

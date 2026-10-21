@@ -1410,6 +1410,71 @@ describe("res.send() with Transfer-Encoding matches Express", () => {
   });
 });
 
+describe("rewriting req.url and req.method matches Express", () => {
+  let pair: Pair;
+
+  beforeAll(async () => {
+    pair = await startPair((app, kind) => {
+      const k = kit(kind);
+      const seen = (req: any) => ((req.seen ??= []), req.seen);
+      const reply = (where: string) => (req: any, res: any) =>
+        res.json({ where, method: req.method, url: req.url, originalUrl: req.originalUrl, path: req.path, params: req.params, query: req.query, seen: req.seen ?? [] });
+
+      app.use((req: any, _res: any, next: any) => {
+        seen(req).push("first");
+        // Like method-override: POST /x?_method=DELETE becomes a DELETE.
+        if (req.method === "POST" && req.query._method) req.method = String(req.query._method).toUpperCase();
+        next();
+      });
+      app.use((req: any, _res: any, next: any) => {
+        if (req.path === "/old") req.url = "/new?from=old";
+        if (req.path === "/to-user") req.url = "/users/42";
+        next();
+      });
+      app.get("/account/edit", (req: any, _res: any, next: any) => {
+        req.url = "/users/12/edit";
+        next();
+      });
+      app.use("/v1", (req: any, _res: any, next: any) => {
+        seen(req).push(`v1 sees ${req.url}`);
+        if (req.url.startsWith("/legacy")) req.url = req.url.replace("/legacy", "/users");
+        next();
+      });
+
+      const router = k.Router();
+      router.use((req: any, _res: any, next: any) => {
+        if (req.url === "/short") req.url = "/long/7";
+        next();
+      });
+      router.get("/long/:id", reply("router long"));
+      app.use("/api", router);
+
+      app.get("/new", reply("new"));
+      app.get("/users/:id", reply("user"));
+      app.get("/users/:id/edit", reply("user edit"));
+      app.get("/v1/users/:id", reply("v1 user"));
+      app.delete("/items/:id", reply("delete item"));
+      app.post("/items/:id", reply("post item"));
+      app.use((req: any, res: any) => res.status(404).json({ notFound: req.url, method: req.method, seen: req.seen ?? [] }));
+    });
+  });
+
+  afterAll(() => Promise.all([pair.express.close(), pair.pype.close()]));
+
+  it.each([
+    ["GET", "/old"],
+    ["GET", "/old?x=1"],
+    ["GET", "/to-user"],
+    ["GET", "/account/edit"],
+    ["GET", "/v1/legacy/9"],
+    ["GET", "/v1/other"],
+    ["GET", "/api/short"],
+    ["POST", "/items/3?_method=DELETE"],
+    ["POST", "/items/3"],
+    ["POST", "/items/3?_method=PATCH"],
+  ])("%s %s", (method, path) => same(path, { method }, pair));
+});
+
 describe("every HTTP method matches Express", () => {
   let pair: Pair;
   const methods = ["PURGE", "PROPFIND", "SEARCH", "TRACE", "QUERY", "LOCK", "MKCOL", "M-SEARCH", "REPORT"];

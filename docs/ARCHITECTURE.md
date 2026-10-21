@@ -215,7 +215,11 @@ sequenceDiagram
     F-->>N: 404 or error response
 ```
 
-The route is looked up **once**, before the pipeline starts. While walking the
+The route is looked up **once**, before the pipeline starts, and again only
+when middleware changed `req.url` or `req.method` (`route()` in `handle()`),
+continuing after the layer that ran last, as Express matches each layer
+against the current URL. `unmount()` keeps such a rewrite when it restores
+`req.url`, with the mount path in front. While walking the
 layers, a route layer runs only if it is one of the layers the tree matched.
 Middleware layers are checked by a prefix comparison, segment by segment when
 the mount path has `:params`. When the path contains a `%`, the tree is also

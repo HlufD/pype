@@ -356,6 +356,12 @@ app.use("/admin", adminApp);
 
 The root router is `app.router`, like in Express 5.
 
+Middleware can rewrite `req.url` or `req.method` and call `next()`, like in
+Express: the following layers are matched against the new URL and method,
+so `method-override` and URL rewriting work. A rewrite in middleware mounted
+on a path keeps the mount path in front: `req.url = "/users/7"` under
+`app.use("/v1", ...)` continues as `/v1/users/7`.
+
 A mount path can have params, like `app.use("/orgs/:org", tenant)`: each
 matches one path segment, the middleware gets them in `req.params` (and runs
 `param()` callbacks), and `req.baseUrl` is the matched part, `/orgs/acme`.

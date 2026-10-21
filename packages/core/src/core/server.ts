@@ -589,29 +589,55 @@ export class Pype {
       return finish(error);
     }
 
-    const method = (req.method || "GET").toLowerCase();
+    let method = "";
+    let match: ReturnType<RouteNode["match"]> = null;
+    let decodeErrors: Map<RouteLayer, Error> | null = null;
+    let optionsMethods: Map<PypeRouter, Set<string>> | null = null;
+    let pathLayers: Set<RouteLayer> | null = null;
+    let matchedLayers: Set<Layer> | null = null;
+    let layers: Layer[] = [];
+    let routedUrl: string | undefined;
+    let routedMethod: string | undefined;
+    let index = 0;
+    let current: Layer | undefined;
 
-    const match =
-      this.routes.match(req.path, method) ??
-      (method === HTTP_METHODS.HEAD
-        ? this.routes.match(req.path, HTTP_METHODS.GET)
-        : null);
+    // Looks up the routes once. Like Express, which matches every layer
+    // against the current URL, it looks again when middleware changed
+    // req.url or req.method, and goes on after the layer that ran last.
+    const route = () => {
+      routedUrl = req.url;
+      routedMethod = req.method;
+      method = (req.method || "GET").toLowerCase();
 
-    const matched = match ? this.routeLayers.get(match.handlers)! : [];
+      match =
+        this.routes.match(req.path, method) ??
+        (method === HTTP_METHODS.HEAD
+          ? this.routes.match(req.path, HTTP_METHODS.GET)
+          : null);
 
-    // Like Express, a route whose path matches but whose params fail to
-    // decode raises a 400 for every method, not only the ones it handles.
-    // Only an escape can fail to decode.
-    const decodeErrors = req.path.includes("%") ? this.decodeErrorsFor(req.path) : null;
+      const matched = match ? this.routeLayers.get(match.handlers)! : [];
 
-    // Automatic OPTIONS, like Express's router: each router collects the
-    // methods of the routes it passes that match the path but don't handle
-    // OPTIONS, and answers with them when it is done.
-    const optionsMethods = method === HTTP_METHODS.OPTIONS ? new Map<PypeRouter, Set<string>>() : null;
-    const pathLayers = optionsMethods ? this.routeLayersFor(req.path) : null;
-    const matchedLayers = optionsMethods ? new Set<Layer>(matched) : null;
-    const candidates = new Set([...matched, ...(pathLayers ?? []), ...(decodeErrors?.keys() ?? [])]);
-    const layers = this.dispatchOrder([...candidates]);
+      // Like Express, a route whose path matches but whose params fail to
+      // decode raises a 400 for every method, not only the ones it handles.
+      // Only an escape can fail to decode.
+      decodeErrors = req.path.includes("%") ? this.decodeErrorsFor(req.path) : null;
+
+      // Automatic OPTIONS, like Express's router: each router collects the
+      // methods of the routes it passes that match the path but don't handle
+      // OPTIONS, and answers with them when it is done.
+      optionsMethods = method === HTTP_METHODS.OPTIONS ? (optionsMethods ?? new Map()) : null;
+      pathLayers = optionsMethods ? this.routeLayersFor(req.path) : null;
+      matchedLayers = optionsMethods ? new Set<Layer>(matched) : null;
+      const candidates = new Set([...matched, ...(pathLayers ?? []), ...(decodeErrors?.keys() ?? [])]);
+      layers = this.dispatchOrder([...candidates]);
+
+      index = 0;
+      if (current) {
+        const ran = this.layerIndex.get(current)!;
+        while (index < layers.length && this.layerIndex.get(layers[index])! <= ran) index++;
+      }
+    };
+    route();
 
     let paramCalls: Map<PypeRouter, Record<string, ParamCall>> | undefined;
     const getParamCalls = () => (paramCalls ??= new Map());
@@ -622,10 +648,13 @@ export class Pype {
       sendOptions(res, [...methods].sort().join(", "));
       return true;
     };
-    let index = 0;
-    let current: Layer | undefined;
-
     const next = (err?: any) => {
+      if (req.url !== routedUrl || req.method !== routedMethod) {
+        if (req.url !== routedUrl) {
+          req.query = this.settings["query parser fn"](queryOf(req.url ?? "/"));
+        }
+        route();
+      }
       if (err === "route") err = undefined;
 
       if (err === "router") {
@@ -869,11 +898,10 @@ export class Pype {
 
       mount(req, layer.path, layer.caseMask ?? this.caseSensitive);
       if (mounted) mount(req, mounted.path);
+      const mountedUrl = req.url;
 
       const done = once((error?: any) => {
-        req.url = url;
-        req.path = path;
-        req.baseUrl = baseUrl;
+        unmount(req, url, path, baseUrl, mountedUrl);
         next(error);
       });
 
@@ -956,11 +984,10 @@ export class Pype {
     const { url, path, baseUrl } = req;
     req.route = { path: layer.routePath, method };
     mount(req, layer.baseUrl, layer.caseMask ?? this.caseSensitive);
+    const mountedUrl = req.url;
 
     const leave = (error?: any) => {
-      req.url = url;
-      req.path = path;
-      req.baseUrl = baseUrl;
+      unmount(req, url, path, baseUrl, mountedUrl);
       next(error);
     };
 
@@ -1444,6 +1471,37 @@ function pickParams(source: Record<string, string>, keys: string[]) {
  */
 function mergeParams(enabled: boolean, params: Record<string, string>, parent?: Record<string, string>) {
   return enabled && parent ? { ...parent, ...params } : params;
+}
+
+/**
+ * Puts `req.url`, `req.path` and `req.baseUrl` back after a layer that
+ * {@link mount} ran. Like Express, a `req.url` the layer changed is kept,
+ * with the mount path in front again, and `req.path` follows it.
+ *
+ * @param mountedUrl - `req.url` as the layer got it.
+ */
+function unmount(req: Request, url: string | undefined, path: string, baseUrl: string, mountedUrl: string | undefined) {
+  if (req.url === mountedUrl) {
+    req.url = url;
+    req.path = path;
+  } else {
+    req.url = req.baseUrl.slice(baseUrl.length) + (req.url ?? "");
+    req.path = pathOf(req.url);
+  }
+  req.baseUrl = baseUrl;
+}
+
+/** The path of a URL, without the query and with duplicate slashes collapsed, see {@link Pype.prepare}. */
+function pathOf(url: string) {
+  const queryStart = url.indexOf("?");
+  const path = queryStart === -1 ? url : url.slice(0, queryStart);
+  return path.includes("//") ? path.replace(/\/{2,}/g, "/") : path;
+}
+
+/** The query of a URL, `null` without a `?`. */
+function queryOf(url: string) {
+  const queryStart = url.indexOf("?");
+  return queryStart === -1 ? null : url.slice(queryStart + 1);
 }
 
 /** Strips `base` from the front of `req.url` and `req.path` and appends it to `req.baseUrl`. */

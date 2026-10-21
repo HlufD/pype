@@ -1475,6 +1475,37 @@ describe("rewriting req.url and req.method matches Express", () => {
   ])("%s %s", (method, path) => same(path, { method }, pair));
 });
 
+describe("errors for invalid arguments match Express", () => {
+  const thrown = (fn: () => unknown) => {
+    try {
+      fn();
+      return "no error";
+    } catch (error) {
+      return `${(error as Error).constructor.name}: ${(error as Error).message}`;
+    }
+  };
+
+  it.each<[string, (app: any, router: any) => unknown]>([
+    ["app.use()", (app) => app.use()],
+    ["app.use(path)", (app) => app.use("/x")],
+    ["app.use(number)", (app) => app.use(3)],
+    ["app.use(path, string)", (app) => app.use("/x", "nope")],
+    ["app.use(path, null)", (app) => app.use("/x", null)],
+    ["app.use(path, Date)", (app) => app.use("/x", new Date())],
+    ["router.use()", (_app, router) => router.use()],
+    ["router.use(path, number)", (_app, router) => router.use("/x", 3)],
+    ["app.post(path)", (app) => app.post("/x")],
+    ["app.post(path, number)", (app) => app.post("/x", 3)],
+    ["app.purge(path, object)", (app) => app.purge("/x", {})],
+    ["router.get(path, string)", (_app, router) => router.get("/x", "nope")],
+    ["app.route(path).get(number)", (app) => app.route("/x").get(3)],
+    ["router.param(missing)", (_app, router) => router.param()],
+    ["router.param(name, number)", (_app, router) => router.param("id", 3)],
+  ])("%s", (_name, call) => {
+    expect(thrown(() => call(new Pype(), new PypeRouter()))).toBe(thrown(() => call(express(), express.Router())));
+  });
+});
+
 describe("every HTTP method matches Express", () => {
   let pair: Pair;
   const methods = ["PURGE", "PROPFIND", "SEARCH", "TRACE", "QUERY", "LOCK", "MKCOL", "M-SEARCH", "REPORT"];

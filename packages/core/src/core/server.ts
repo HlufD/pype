@@ -235,6 +235,7 @@ export class Pype {
     const use = (this.router.use as (...args: any[]) => PypeRouter).bind(this.router);
     const path: PathParam = isPathArgument(args[0]) ? args[0] : "/";
     const handlers = (isPathArgument(args[0]) ? args.slice(1) : args).flat(Infinity);
+    if (handlers.length === 0) throw new TypeError("app.use() requires a middleware function");
     if (!handlers.some((handler) => handler instanceof Pype)) {
       use(...args);
       return this;

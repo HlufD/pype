@@ -292,9 +292,8 @@ export class PypeRouter {
       AnyHandler | PypeRouter
     >;
 
-    if (handlers.length === 0) {
-      throw new TypeError("use() requires a middleware function or router");
-    }
+    // Express's messages, which code and tests written for it check.
+    if (handlers.length === 0) throw new TypeError("argument handler is required");
 
     let pending: AnyHandler[] = [];
     const flush = () => {
@@ -315,9 +314,7 @@ export class PypeRouter {
       } else if (typeof handler === "function") {
         pending.push(handler);
       } else {
-        throw new TypeError(
-          `use() requires a middleware function but got a ${typeof handler}`,
-        );
+        throw new TypeError("argument handler must be a function");
       }
     }
 
@@ -521,9 +518,8 @@ export class PypeRouter {
   private addRoute(path: PathParam, methods: string[], handlers: HandlerParam[]) {
     const flat = (handlers as unknown[]).flat(Infinity) as AnyHandler[];
 
-    if (flat.length === 0 || flat.some((h) => typeof h !== "function")) {
-      throw new TypeError(`Route ${path} requires handler functions`);
-    }
+    if (flat.length === 0) throw new TypeError("argument handler is required");
+    if (flat.some((h) => typeof h !== "function")) throw new TypeError("argument handler must be a function");
 
     this.stack.push({ type: "route", path, methods, handlers: flat });
     version++;
@@ -553,13 +549,13 @@ for (const method of METHODS) {
 
 /**
  * Whether the first `use()` argument is a mount path rather than a handler,
- * the test Express uses: a string, a RegExp, or an array whose first leaf
- * isn't a function or router.
+ * the test Express uses: anything whose first leaf (in nested arrays) isn't
+ * a function or router, so `use(3)` is a path without handlers.
  */
 export function isPathArgument(arg: unknown): boolean {
   let first = arg;
   while (Array.isArray(first) && first.length > 0) first = first[0];
-  return typeof first === "string" || first instanceof RegExp;
+  return typeof first !== "function" && !(first instanceof PypeRouter);
 }
 
 /** Parameter names of a route path: `/users/:id/*` gives `["id", "*"]`. */

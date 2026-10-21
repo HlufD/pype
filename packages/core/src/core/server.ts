@@ -984,6 +984,9 @@ export class Pype {
         next(error);
       });
 
+      // Like Express, req.next is the next the middleware got, which
+      // res.format(), res.render() and res.sendFile() call.
+      req.next = done;
       invoke(layer.handle, err, req, res, done);
     });
   }
@@ -1071,6 +1074,8 @@ export class Pype {
       unmount(req, url, path, baseUrl, mountedUrl);
       next(error);
     };
+    // In a route, req.next leaves it for the following layers, like Express's router next.
+    req.next = once(leave);
 
     let index = 0;
     let sync = 0;

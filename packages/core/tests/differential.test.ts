@@ -1730,6 +1730,24 @@ describe("small request and response details match Express", () => {
     same("/users", { method: "OPTIONS" }, pair),
   );
 
+  it("req.next is the next a middleware or route got, as res.format() passes it", async () => {
+    const pair2 = await startPair((app) => {
+      app.use("/mw", (req: any, res: any, next: any) =>
+        res.format({ json: (_a: any, _b: any, c: any) => res.json({ same: c === next, reqNext: req.next === next }) }),
+      );
+      app.get("/route", (req: any, res: any) =>
+        res.format({ default: (_a: any, _b: any, c: any) => res.json({ isFunction: typeof c, reqNext: typeof req.next }) }),
+      );
+      app.get("/route-next", (req: any) => req.next(Object.assign(new Error("via req.next"), { status: 409 })));
+      app.use((err: any, _req: any, res: any, _next: any) => res.status(err.status).send(err.message));
+    });
+    try {
+      for (const path of ["/mw", "/route", "/route-next"]) await same(path, { headers: { Accept: "application/json" } }, pair2);
+    } finally {
+      await Promise.all([pair2.express.close(), pair2.pype.close()]);
+    }
+  });
+
   it("app.listen() passes server errors to its callback", async () => {
     const taken = await start(new Pype());
     try {

@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync 
 import { tmpdir } from "os";
 import { join } from "path";
 import { Pype } from "../src/core/server";
+import { PypeRouter } from "../src/core/router";
 import { Request } from "../src/core/request";
 import { Response } from "../src/core/response";
 import { NextFunction } from "../src/types/next-function";
@@ -169,6 +170,42 @@ describe("malformed param escapes", () => {
 
   it("still decodes valid escapes", async () => {
     expect(await (await fetch(`${base}/users/a%20b`)).json()).toEqual({ id: "a b" });
+  });
+});
+
+describe("pattern routes in mounted routers", () => {
+  let api: Server;
+  let base: string;
+
+  beforeAll(async () => {
+    const app = new Pype({ env: "test" });
+    const admin = new PypeRouter();
+    admin.get(/^\/users\/(\d+)$/, (req: Request, res: Response) => res.json({ user: req.params[0] }));
+    admin.get("/report/:from-:to", (req: Request, res: Response) => res.json(req.params));
+    app.use("/admin", (req: Request, res: Response, next: NextFunction) =>
+      req.headers.authorization === "secret" ? next() : res.status(401).end(),
+    );
+    app.use("/admin", admin);
+    app.use((_req: Request, res: Response) => res.status(404).end());
+
+    api = app.listen(0, "127.0.0.1");
+    await new Promise((resolve) => api.once("listening", resolve));
+    base = `http://127.0.0.1:${(api.address() as AddressInfo).port}`;
+  });
+
+  afterAll(() => {
+    api.close();
+  });
+
+  it("only match under the router's mount path, so its middleware can't be skipped", async () => {
+    // Same length as "/admin": cutting it off left "/users/7".
+    for (const path of ["/zzzzz/users/7", "/other/users/7", "/xxxxx/report/1-2", "/users/7"]) {
+      expect((await fetch(`${base}${path}`)).status).toBe(404);
+      expect((await fetch(`${base}${path}`, { method: "OPTIONS" })).status).toBe(404);
+    }
+    expect((await fetch(`${base}/admin/users/7`)).status).toBe(401);
+    const allowed = await fetch(`${base}/admin/users/7`, { headers: { authorization: "secret" } });
+    expect(await allowed.json()).toEqual({ user: "7" });
   });
 });
 

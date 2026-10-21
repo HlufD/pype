@@ -589,6 +589,9 @@ export class Pype {
 
           let params: Record<string, string>;
           if (layer.pattern) {
+            // The pattern is matched below the router's mount path, which
+            // the request must be under, as for middleware.
+            if (!matchesPrefix(req.path, layer.fullPath, this.caseSensitive)) continue;
             let found: PatternMatch | null;
             try {
               const path = relativePath(req.path, layer.fullPath, this.caseSensitive);
@@ -1118,6 +1121,7 @@ function relativePath(path: string, mountPath: string, caseSensitive: boolean) {
 /** Whether a route's path matches the request, whatever the method; for automatic OPTIONS. */
 function routeMatchesPath(layer: RouteLayer, path: string, treeLayers: Set<RouteLayer>, caseSensitive: boolean) {
   if (!layer.pattern) return treeLayers.has(layer);
+  if (!matchesPrefix(path, layer.fullPath, caseSensitive)) return false;
   try {
     return matchPattern(layer.pattern, relativePath(path, layer.fullPath, caseSensitive)) !== null;
   } catch {

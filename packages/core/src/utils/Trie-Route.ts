@@ -180,8 +180,10 @@ class RouteNode {
    * `null` when nothing matches.
    */
   match(url: string, method: string): MatchResult | null {
-    const path = this.normalize(url);
-    // Compared folded, while param values are cut from `path` with their case.
+    // Values are cut from `source`: with their case, and with a trailing
+    // slash, which a wildcard keeps like in Express (`/files/a/` gives "a/").
+    const source = this.collapseSlashes(url);
+    const path = this.dropTrailingSlash(source);
     const folded = this.fold(path);
 
     const staticEntry = this.staticRoutes.get(folded)?.get(method);
@@ -190,7 +192,7 @@ class RouteNode {
     }
 
     const values: string[] = [];
-    const node = this.find(this.root, folded, 0, method, values, path);
+    const node = this.find(this.root, folded, 0, method, values, source);
     if (!node) return null;
 
     const entry = node.entries.get(method)!;
@@ -394,20 +396,23 @@ class RouteNode {
 
   /** Applies the duplicate and trailing slash options to a path. */
   private normalize(url: string) {
-    let path = url;
+    return this.dropTrailingSlash(this.collapseSlashes(url));
+  }
 
-    if (this.config.ignoreDuplicateSlashes && hasDoubleSlash(path)) {
-      path = path.replace(/\/+/g, "/");
-    }
+  /** Applies the duplicate slash option. */
+  private collapseSlashes(url: string) {
+    return this.config.ignoreDuplicateSlashes && hasDoubleSlash(url) ? url.replace(/\/+/g, "/") : url;
+  }
 
+  /** Applies the trailing slash option, dropping at most one slash. */
+  private dropTrailingSlash(path: string) {
     if (
       this.config.ignoreTrailingSlash &&
       path.length > 1 &&
       path.charCodeAt(path.length - 1) === SLASH
     ) {
-      path = path.slice(0, -1);
+      return path.slice(0, -1);
     }
-
     return path;
   }
 

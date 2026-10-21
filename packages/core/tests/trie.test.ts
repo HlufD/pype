@@ -389,12 +389,11 @@ describe("RouteNode with normalization enabled", () => {
       expect(router.match("/users/", HTTP_METHODS.GET)).not.toBeNull();
     });
 
-    it("normalizes wildcard paths", () => {
+    it("normalizes wildcard paths, keeping a trailing slash in the value like Express", () => {
       router.register("/files/*", HTTP_METHODS.GET, [() => {}]);
 
-      const result = router.match("/files//a///b/", HTTP_METHODS.GET);
-
-      expect(result!.params["*"]).toBe("a/b");
+      expect(router.match("/files//a///b/", HTTP_METHODS.GET)!.params["*"]).toBe("a/b/");
+      expect(router.match("/files//a///b", HTTP_METHODS.GET)!.params["*"]).toBe("a/b");
     });
   });
 

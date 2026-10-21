@@ -383,7 +383,8 @@ function strictError(text: string, first: string | undefined) {
  * empty body becomes `{}`, a whitespace-only one is a 400. The charset must
  * be a UTF variant, otherwise 415.
  */
-export function json(options: JsonOptions = {}): Middleware {
+export function json(opts?: JsonOptions): Middleware {
+  const options = opts ?? {};
   const strict = options.strict ?? true;
   const config = { defaultType: "json", isValidCharset: (charset: string) => charset.startsWith("utf-") };
 
@@ -411,7 +412,8 @@ export function json(options: JsonOptions = {}): Middleware {
  *
  * @throws When `defaultCharset`, `parameterLimit` or `depth` is invalid.
  */
-export function urlencoded(options: UrlencodedOptions = {}): Middleware {
+export function urlencoded(opts?: UrlencodedOptions): Middleware {
+  const options = opts ?? {};
   const defaultCharset = options.defaultCharset || "utf-8";
   if (defaultCharset !== "utf-8" && defaultCharset !== "iso-8859-1") {
     throw new TypeError("option defaultCharset must be either utf-8 or iso-8859-1");
@@ -462,11 +464,11 @@ export function urlencoded(options: UrlencodedOptions = {}): Middleware {
 }
 
 /** Reads `text/plain` bodies into `req.body` as a string, in any charset Node can decode. */
-export function text(options: BodyParserOptions = {}): Middleware {
-  return createParser({ defaultType: "text/plain", isValidCharset: () => true }, options, (body) => body);
+export function text(options?: BodyParserOptions): Middleware {
+  return createParser({ defaultType: "text/plain", isValidCharset: () => true }, options ?? {}, (body) => body);
 }
 
 /** Reads `application/octet-stream` bodies into `req.body` as a `Buffer`. */
-export function raw(options: BodyParserOptions = {}): Middleware {
-  return createParser({ defaultType: "application/octet-stream", isValidCharset: null }, options, (body) => body);
+export function raw(options?: BodyParserOptions): Middleware {
+  return createParser({ defaultType: "application/octet-stream", isValidCharset: null }, options ?? {}, (body) => body);
 }

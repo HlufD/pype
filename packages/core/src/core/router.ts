@@ -480,6 +480,8 @@ export class PypeRouter {
       const paths = [entry.path].flat();
       // The layers of one array path share a group and run once per request.
       const group = paths.length > 1 ? {} : undefined;
+      // Each middleware is a layer of its own in Express, with its own group.
+      const groups = entry.type === "use" ? entry.handlers.map(() => (paths.length > 1 ? {} : undefined)) : [];
 
       if (entry.type === "router") {
         // Each mount path gets its own copy of the router's layers; copy i of
@@ -508,7 +510,7 @@ export class PypeRouter {
         if (entry.type === "use") {
           const mount = below ? trimSlashes(basePath) : joinPaths(basePath, path as string);
           const pattern = path instanceof RegExp ? statelessPattern(path) : undefined;
-          for (const handle of entry.handlers) {
+          entry.handlers.forEach((handle, i) => {
             layers.push({
               kind: "middleware",
               path: mount,
@@ -520,9 +522,9 @@ export class PypeRouter {
               routers: chain,
               keys,
               mounts,
-              group,
+              group: groups[i],
             });
-          }
+          });
         } else {
           layers.push({
             kind: "route",

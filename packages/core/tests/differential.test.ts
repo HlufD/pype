@@ -2361,6 +2361,27 @@ describe("regular expression and array paths match Express", () => {
     "/after-route/9",
   ])("GET %s", (path) => same(path, {}, pair));
 
+  it("an array of paths with several middleware runs each of them once", async () => {
+    const pair = await startPair((app) => {
+      const mark = (name: string) => (_req: any, res: any, next: any) => {
+        res.append("x-ran", name);
+        next();
+      };
+      app.use(["/foo/", "/bar", "/foo/x"], [[mark("1")], mark("2")], [mark("3")], (req: any, res: any) =>
+        res.send(`saw ${req.method} ${req.url} through ${req.originalUrl}`),
+      );
+    });
+    try {
+      for (const path of ["/foo", "/bar", "/foo/x"]) {
+        const [fromExpress, fromPype] = await both(path, {}, pair);
+        expect(fromPype.headers["x-ran"]).toBe(fromExpress.headers["x-ran"]);
+        expect(fromPype.text).toBe(fromExpress.text);
+      }
+    } finally {
+      await Promise.all([pair.express.close(), pair.pype.close()]);
+    }
+  });
+
   it.each(["/re/42", "/chain", "/one", "/routed/r-7", "/dec/%ZZ", "/dec/a%20b"])("HEAD, POST, PUT and OPTIONS %s", async (path) => {
     for (const method of ["HEAD", "POST", "PUT", "OPTIONS"]) await same(path, { method }, pair);
   });
@@ -2443,6 +2464,9 @@ describe("view rendering matches Express", () => {
       app.get("/app-render", (_req: any, res: any) =>
         app.render("page", { title: "app.render" }, (err: Error | null, html: string) => (err ? res.status(500).end() : res.send(html))),
       );
+      app.get("/app-render-null", (_req: any, res: any) =>
+        app.render("users/show", null, (err: Error | null, html: string) => (err ? res.status(500).end() : res.send(html))),
+      );
       app.get("/no-engine", (_req: any, res: any) => {
         app.set("view engine", undefined);
         try {
@@ -2481,6 +2505,7 @@ describe("view rendering matches Express", () => {
     "/callback",
     "/callback-error",
     "/app-render",
+    "/app-render-null",
     "/no-engine",
     "/unknown-module",
     "/missing-module",

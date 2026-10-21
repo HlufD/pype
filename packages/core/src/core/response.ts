@@ -11,6 +11,7 @@ import {
   encodeUrl,
   escapeHtml,
   generateETag,
+  generateStrongETag,
   isPreconditionFailure,
   isRangeFresh,
   lookupMime,
@@ -160,7 +161,10 @@ export class Response extends ServerResponse<Request> {
       // The app's "etag fn"; a response of no app gets weak ETags.
       const etagFn = this.app ? this.app.settings["etag fn"] : generateETag;
       if (typeof etagFn === "function" && !this.hasHeader("ETag")) {
-        const etag = etagFn(chunk);
+        // Pype's own generators hash strings directly; like Express, a
+        // custom "etag" function gets a Buffer.
+        const builtIn = etagFn === generateETag || etagFn === generateStrongETag;
+        const etag = builtIn ? etagFn(chunk, length) : etagFn(typeof chunk === "string" ? Buffer.from(chunk) : chunk, undefined);
         if (etag) this.setHeader("ETag", etag);
       }
     }

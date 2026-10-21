@@ -66,14 +66,15 @@ const INHERITED_SETTINGS = ["case sensitive routing", "strict routing", "json sp
  * app.listen(3000);
  */
 export class Pype {
+  // Like Express, these have no prototype: app.get("hasOwnProperty") is undefined.
   /** Express-compatible settings, e.g. `app.set("trust proxy", "loopback")`. */
-  settings: Settings = {};
+  settings: Settings = Object.create(null);
   /** Values shared by the whole app and every view, like Express's `app.locals`. `locals.settings` is the app's settings. */
-  locals: Record<string, any> = {};
+  locals: Record<string, any> = Object.create(null);
   /** Template engines by extension, see {@link Pype.engine}. */
-  engines: Record<string, Engine> = {};
+  engines: Record<string, Engine> = Object.create(null);
   /** Views found so far by name, used when `"view cache"` is on. */
-  cache: Record<string, View> = {};
+  cache: Record<string, View> = Object.create(null);
   /** The path this app is mounted on in its parent, like Express: `"/"` when it isn't mounted. */
   mountpath: PathParam = "/";
   /** The app this one is mounted in, see {@link Pype.use}. */
@@ -167,10 +168,16 @@ export class Pype {
    * values as Express.
    *
    * @param name - Setting name, e.g. `"etag"` or `"json spaces"`.
-   * @param value - New value.
+   * @param value - New value; without it, like Express, the setting is read.
    */
-  set(name: string, value: any): this {
+  set(name: string): any;
+  set(name: string, value: any): this;
+  set(name: string, value?: any): any {
+    if (arguments.length === 1) return this.settings[name];
+
+    // The compiled "<name> fn" counts as set too, so a mounted app keeps it.
     this.defaults.delete(name);
+    this.defaults.delete(`${name} fn`);
     this.settings[name] = value;
     if (name === "etag")
       this.settings["etag fn"] = compileETag(value);
@@ -447,7 +454,8 @@ export class Pype {
     callback?: (err: Error | null, html?: string) => void,
   ): void {
     let done = callback!;
-    let opts = options as Record<string, any>;
+    // Like Express, null or undefined options are none.
+    let opts = (options || {}) as Record<string, any>;
     if (typeof options === "function") {
       done = options as (err: Error | null, html?: string) => void;
       opts = {};
@@ -1387,17 +1395,14 @@ type ETagFunction = (body: string | Buffer) => string | undefined;
  * @throws When the value is none of those.
  */
 function compileETag(value: unknown): ETagFunction | undefined {
-  if (typeof value === "function") {
-    // Like Express, a custom function always gets the body as a Buffer.
-    const custom = value as (body: Buffer, encoding?: BufferEncoding) => string | undefined;
-    return (body) => custom(typeof body === "string" ? Buffer.from(body) : body, undefined);
-  }
+  // Like Express, a custom function is used as it is; res.send() gives it the body as a Buffer.
+  if (typeof value === "function") return value as ETagFunction;
   switch (value) {
     case true:
     case "weak":
-      return (body) => generateETag(body);
+      return generateETag;
     case "strong":
-      return (body) => generateStrongETag(body);
+      return generateStrongETag;
     case false:
       return undefined;
     default:

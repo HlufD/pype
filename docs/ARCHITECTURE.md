@@ -95,7 +95,7 @@ flowchart TB
 
     subgraph Registration
         R["PypeRouter<br/>(stack of use / route / router entries)"]
-        RB["RouteBuilder<br/>(app.route chains)"]
+        RB["Route<br/>(app.route chains)"]
     end
 
     subgraph Compiled routing table
@@ -350,9 +350,10 @@ routers level by level, using the `mounts` a layer was compiled with:
    RegExp groups), merged when its router has `mergeParams`, and its router's
    callbacks run for them.
 
-`runRoute()` additionally sets `req.route` and runs the route's own handlers
-in order with its own inner `next`; a four-parameter handler only gets errors
-raised inside the route.
+`runRoute()` then runs the layer's `Route` with `route.dispatch()`, which
+sets `req.route` and runs the route's handlers for the method in order with
+its own inner `next`, like Express's `Route`; a four-parameter handler only
+gets errors raised inside the route.
 
 #### `invoke()`: catching errors
 
@@ -403,10 +404,12 @@ type StackEntry =
 - `use()` flattens nested arrays (Express allows `use([a, [b, c]])`), splits
   a mixed list like `use("/x", mw, router, mw2)` into consecutive entries, and
   validates that every argument is a function or a router.
-- The route methods (`get`, `post`, ..., `all`) flatten handler arrays and
-  push a `route` entry.
-- `route(path)` returns a `RouteBuilder`, a thin object whose methods call
-  the router's methods with the stored path.
+- The route methods (`get`, `post`, ..., `all`) each make a `Route` with
+  the handlers and push a `route` entry, like Express.
+- `route(path)` pushes an empty `Route` and returns it. A `Route` keeps its
+  handlers with the method each is for (`stack`) and the methods it has
+  (`methods`, `_all` after `all()`); adding handlers bumps
+  `routingVersion()`, so routes added to a chain later are compiled too.
 - `new PypeRouter({ mergeParams: true })` sets `mergeParams`, read by
   `enterParams()`.
 
@@ -427,7 +430,9 @@ interface RouteLayer {
   baseUrl;    // mount path, e.g. "/admin", exposed as req.baseUrl
   keys;       // param names of the route's own path, for param() callbacks
   mounts;     // as for middleware
-  methods; handlers; routers; group?;
+  methods;    // the route's methods for the tree, METHODS itself after all()
+  route;      // the Route, which runs the handlers
+  routers; group?;
 }
 interface RouterEndLayer { kind: "end"; router; routers }
 ```
@@ -901,7 +906,7 @@ preprocessing (like `"trust proxy"`), compute it in `set()` and store the
 result under a separate key.
 
 **HTTP methods.** Every method in Node's `http.METHODS` gets a route
-method on `PypeRouter`, `RouteBuilder` and `Pype`, added to their prototypes
+method on `PypeRouter`, `Route` and `Pype`, added to their prototypes
 from `METHODS` (`enums/methods.enum.ts`); the common ones are written out.
 New Node methods are picked up automatically, and `ExtraMethod` lists the
 others for TypeScript.

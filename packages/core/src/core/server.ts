@@ -25,6 +25,7 @@ import {
 } from "./router";
 import { AnyHandler, ErrorMiddleware, Middleware } from "../types/middleware";
 import { NextFunction } from "../types/next-function";
+import { invoke, once } from "./invoke";
 import { Request } from "./request";
 import { Response } from "./response";
 import { generateETag, generateStrongETag, parseQuery } from "../utils/helpers";
@@ -809,7 +810,7 @@ export class Pype {
 
           if (layer.group) (ranGroups ??= new Set()).add(layer.group);
           current = layer;
-          this.runRoute(req, res, layer, params, method, getParamCalls, next);
+          this.runRoute(req, res, layer, params, getParamCalls, next);
           sync = 0;
           return;
         }
@@ -1082,12 +1083,10 @@ export class Pype {
     res: Response,
     layer: RouteLayer,
     params: Record<string, string>,
-    method: string,
     getParamCalls: () => Map<PypeRouter, Record<string, ParamCall>>,
     next: (err?: any) => void,
   ) {
     const { url, path, baseUrl } = req;
-    req.route = { path: layer.routePath, method };
     mount(req, layer.baseUrl, layer.caseMask ?? this.caseSensitive);
     const mountedUrl = req.url;
 
@@ -1098,30 +1097,10 @@ export class Pype {
     // In a route, req.next leaves it for the following layers, like Express's router next.
     req.next = once(leave);
 
-    let index = 0;
-    let sync = 0;
-    const routeNext = (error?: any): void => {
-      if (error === "route" || error === "router") return leave(error);
-      // See handle(): a long synchronous run goes on on the next tick.
-      if (++sync > 100) {
-        setImmediate(routeNext, error);
-        return;
-      }
-
-      while (index < layer.handlers.length) {
-        const handler = layer.handlers[index++];
-        if (Boolean(error) !== (handler.length === 4)) continue;
-        invoke(handler, error, req, res, once(routeNext));
-        sync = 0;
-        return;
-      }
-
-      leave(error);
-    };
-
+    // The route runs its handlers for the method and sets req.route, like Express.
     const keys = layer.pattern ? Object.keys(params) : layer.keys;
     this.enterParams(req, res, layer, params, keys, path, getParamCalls, (error) =>
-      error ? leave(error) : routeNext(),
+      error ? leave(error) : layer.route.dispatch(req, res, leave),
     );
   }
 
@@ -1217,51 +1196,6 @@ function createRouteTable(caseSensitive = true, strict = false) {
     ignoreTrailingSlash: !strict,
     caseSensitive,
   });
-}
-
-/**
- * Calls a handler (or error handler), routing throws and rejected promises
- * to `next(err)` like Express 5.
- */
-function invoke(
-  handler: AnyHandler,
-  err: any,
-  req: Request,
-  res: Response,
-  next: (err?: any) => void,
-) {
-  try {
-    const result: any = err
-      ? handler(err, req, res, next)
-      : handler(req, res, next);
-
-    if (result && typeof result.then === "function") {
-      result.then(undefined, (error: unknown) =>
-        next(error ?? new Error("Rejected promise")),
-      );
-    }
-  } catch (error) {
-    next(error);
-  }
-}
-
-/** Wraps `next` so calling it again only logs a warning. */
-function once(fn: (err?: any) => void) {
-  let called = false;
-  return (err?: any) => {
-    if (called) {
-      // Unlike Express, the extra call doesn't run more layers; an error it
-      // carries is still printed so it isn't lost.
-      if (err && err !== "route" && err !== "router") {
-        console.warn("[warn]: next() called multiple times, ignoring the error passed to it:", err);
-      } else {
-        console.warn("[warn]: next() called multiple times");
-      }
-      return;
-    }
-    called = true;
-    fn(err);
-  };
 }
 
 /** The result of a parameter's `param()` callbacks in one request, reused for the same value. */

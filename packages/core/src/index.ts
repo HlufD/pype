@@ -1,5 +1,5 @@
 export { Pype } from "./core/server";
-export { PypeRouter, RouteBuilder } from "./core/router";
+export { PypeRouter, Route, RouteBuilder } from "./core/router";
 export type { HandlerParam, ParamHandler, PathParam, RouterOptions, UseHandler } from "./core/router";
 export { Request } from "./core/request";
 export type { RouteInfo } from "./core/request";

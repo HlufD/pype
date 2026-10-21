@@ -211,7 +211,7 @@ admin.get("/stats", (req, res) => {
   req.path;        // "/stats"
   req.url;         // "/stats?range=7d"
   req.originalUrl; // "/admin/stats?range=7d"
-  req.route;       // { path: "/stats", method: "get" }
+  req.route.path;  // "/stats"; req.route is the Route, like in Express
 });
 
 app.use("/admin", admin);
@@ -414,16 +414,22 @@ routes, aren't listed; without any other route the request gets the usual
 
 #### `app.route(path)`
 
-Returns a chainable builder for one path:
+Returns the `Route` for one path, like Express: its methods (`get`, `post`,
+..., one per HTTP method, and `all`) add handlers and chain. The handlers
+are one route, run in order for the methods they were added for, so an
+error handler added last sees the errors of the ones before:
 
 ```ts
 app.route("/books")
   .get(list)
-  .post(create);
+  .post(create)
+  .all((err, req, res, next) => res.status(400).send(err.message));
 ```
 
-The builder has `get`, `post`, `put`, `patch`, `delete`, `head`, `options` and
-`all`. The path can also be a RegExp or an array.
+The path can also be a RegExp or an array. `req.route` is the `Route` that
+runs, with `path`, `methods` (`{ get: true, post: true }`) and `stack`, like
+in Express; `new Route(path)` with `route.dispatch(req, res, done)` runs one
+on its own.
 
 #### `app.param(name, callback)`, `router.param(name, callback)`
 
@@ -1097,7 +1103,7 @@ Exported from `pyper-web`:
 
 | Export                | Description |
 | --------------------- | ----------- |
-| `Pype`, `PypeRouter`, `RouteBuilder` | The application, routers and the builder returned by `route()`. |
+| `Pype`, `PypeRouter`, `Route` | The application, routers and the routes `route()` returns (`RouteBuilder` is the old name of `Route`). |
 | `Request`, `Response` | The request and response classes, usable as types. |
 | `Middleware`          | `(req, res, next) => unknown` |
 | `ErrorMiddleware`     | `(err, req, res, next) => unknown` |

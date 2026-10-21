@@ -3,6 +3,7 @@ import { isIP } from "net";
 import { TLSSocket } from "tls";
 import type { Response } from "./response";
 import type { Pype } from "./server";
+import type { Route } from "./router";
 import {
   Ranges,
   isFresh,
@@ -33,13 +34,8 @@ declare global {
 /** Merges Express request augmentations into {@link Request}. */
 export interface Request extends Express.Request {}
 
-/** The route that matched a request, exposed as `req.route`. */
-export interface RouteInfo {
-  /** Route path as written in its definition, e.g. `/users/:id`, a RegExp, or an array of them. */
-  path: string | RegExp | Array<string | RegExp>;
-  /** Lower-case HTTP method of the request. */
-  method: string;
-}
+/** The route that matched a request, `req.route`: the {@link Route} running, like Express. */
+export type RouteInfo = Route;
 
 /** Express-compatible request, extends Node's `IncomingMessage`. */
 export class Request extends IncomingMessage {

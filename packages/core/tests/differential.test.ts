@@ -7,7 +7,7 @@ import cookieParser from "cookie-parser";
 import { Pype } from "../src/core/server";
 import { Request as PypeRequest } from "../src/core/request";
 import { Response as PypeResponse } from "../src/core/response";
-import { PypeRouter } from "../src/core/router";
+import { PypeRouter, Route } from "../src/core/router";
 import { json, raw, text, urlencoded } from "../src/middlewares/body-parser";
 import { View } from "../src/core/view";
 import fc from "fast-check";
@@ -992,6 +992,61 @@ describe("routing and params match Express", () => {
       router.use(mark("use"));
       await new Promise<void>((resolve, reject) => router.handle({ url: "/foo" }, {}, (err: any) => (err ? reject(err) : resolve())));
       expect(ran).toEqual(["all", "use"]);
+    }
+  });
+
+  it("app.route() chains are one route: a chained error handler sees the errors, req.route is the route", async () => {
+    const pair = await startPair((app) => {
+      app
+        .route("/chain")
+        .get((req: any) => (req.query.reject ? Promise.reject(new Error("boom")) : Promise.reject()))
+        .post((_req: any, res: any) => res.send("post"))
+        .all((err: any, req: any, res: any, _next: any) =>
+          res.send(`caught: ${err.message} | ${req.route.path} | ${Object.keys(req.route.methods).sort()}`),
+        );
+      app.route("/methods").get((_req: any, res: any) => res.send("get")).put((_req: any, res: any) => res.send("put"));
+      app.get("/info", (req: any, res: any) => res.json({ path: req.route.path, methods: req.route.methods, handlers: req.route.stack.length }));
+      app.use((req: any, res: any) => res.status(404).send(`not found: ${req.method} ${req.path}`));
+      app.use((err: any, _req: any, res: any, _next: any) => res.status(500).send(`app: ${err.message}`));
+    });
+    try {
+      for (const [method, path] of [
+        ["GET", "/chain?reject=1"],
+        ["GET", "/chain"],
+        ["POST", "/chain"],
+        ["HEAD", "/chain"],
+        ["OPTIONS", "/methods"],
+        ["PUT", "/methods"],
+        ["DELETE", "/methods"],
+        ["GET", "/info"],
+      ]) {
+        await same(path, { method }, pair);
+      }
+    } finally {
+      await Promise.all([pair.express.close(), pair.pype.close()]);
+    }
+  });
+
+  it("a Route on its own dispatches like Express's", async () => {
+    for (const RouteClass of [(express as any).Route, Route]) {
+      const ran: string[] = [];
+      const route = new RouteClass("/foo");
+      const mark = (name: string) => (_req: any, _res: any, next: any) => {
+        ran.push(name);
+        next();
+      };
+      route.get(mark("get")).all(mark("all")).post(mark("post"));
+      route.all((_req: any, _res: any, next: any) => next(new Error("oops")));
+      route.get((err: any, _req: any, _res: any, next: any) => {
+        ran.push(`error ${err.message}`);
+        next();
+      });
+      for (const method of ["GET", "HEAD", "POST", undefined]) {
+        await new Promise<void>((resolve) => route.dispatch({ method, url: "/foo" }, {}, () => resolve()));
+      }
+      expect(ran).toEqual(["get", "all", "error oops", "get", "all", "error oops", "all", "post", "all"]);
+      expect(route._handlesMethod("head")).toBe(true);
+      expect(route._methods().sort()).toEqual(["GET", "HEAD", "POST", "_ALL"]);
     }
   });
 

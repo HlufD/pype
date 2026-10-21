@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "http";
 import { HTTP_METHODS, METHODS } from "../enums/methods.enum";
 import { AnyHandler, ErrorMiddleware, Middleware } from "../types/middleware";
 import { RouteHandler } from "../types/route-handler";
+import { invoke, once } from "./invoke";
 import { hasMixedSegment, pathKeys } from "../utils/path-pattern";
 
 /** Anything `app.use()` and `router.use()` accept, arrays are flattened like Express. */
@@ -39,7 +40,7 @@ export type PathParam = string | RegExp | Array<string | RegExp>;
 type StackEntry =
   | { type: "use"; path: PathParam; handlers: AnyHandler[] }
   | { type: "router"; path: PathParam; router: PypeRouter }
-  | { type: "route"; path: PathParam; methods: string[]; handlers: AnyHandler[] };
+  | { type: "route"; path: PathParam; route: Route };
 
 /** Options of {@link PypeRouter}, like Express's `Router()` options. */
 export interface RouterOptions {
@@ -122,10 +123,10 @@ export interface RouteLayer {
   group?: object;
   /** Mount path of the route's router, exposed as `req.baseUrl`. */
   baseUrl: string;
-  /** HTTP methods the route responds to, in lower case. */
+  /** HTTP methods the route responds to, in lower case; `METHODS` itself after `all()`. */
   methods: string[];
-  /** Handlers, run in order. */
-  handlers: AnyHandler[];
+  /** The route, which runs its handlers for the request's method. */
+  route: Route;
   /** Routers this layer belongs to, outermost first. */
   routers: PypeRouter[];
   /** Parameter names in the route path, in order; `"*"` for the wildcard. */
@@ -160,67 +161,149 @@ export interface RouterEndLayer {
 /** One step of the request pipeline. */
 export type Layer = MiddlewareLayer | RouteLayer | RouterEndLayer;
 
-export interface RouteBuilder extends Record<ExtraMethod, (...handlers: HandlerParam[]) => RouteBuilder> {}
+/** A handler of a {@link Route}, for one method, or for every method without one. */
+export interface RouteStackLayer {
+  method?: string;
+  handle: AnyHandler;
+}
 
-/** Chainable route definition returned by {@link PypeRouter.route}. */
-export class RouteBuilder {
-  /**
-   * @param path - Path every route in the chain is registered on.
-   * @param router - Router the routes are added to.
-   */
-  constructor(
-    private path: PathParam,
-    private router: PypeRouter,
-  ) {}
+export interface Route extends Record<ExtraMethod, (...handlers: HandlerParam[]) => Route> {}
 
-  /** Adds handlers for every HTTP method on this path. */
+/**
+ * A path's handlers by method, like Express's `Route`: `app.route(path)`
+ * returns one, and each `app.get(path, ...)` and the like makes one. Its
+ * handlers run in order for the methods they were added for, so in
+ * `app.route("/x").get(a).all(onError)` the error handler sees `a`'s errors.
+ * `req.route` is the route that runs.
+ */
+export class Route {
+  /** The path as registered, a string, RegExp or array; `req.route.path`. */
+  readonly path: PathParam;
+  /** The handlers in order, with the method each one is for. */
+  readonly stack: RouteStackLayer[] = [];
+  /** The methods the route has handlers for, `_all` after `all()`, like Express. */
+  readonly methods: Record<string, boolean> = Object.create(null);
+
+  /** @param path - The path the route is for. */
+  constructor(path: PathParam) {
+    this.path = path;
+  }
+
+  /** Adds handlers for every HTTP method. */
   all(...handlers: HandlerParam[]): this {
-    this.router.all(this.path, ...handlers);
-    return this;
+    return this.add(undefined, handlers);
   }
 
-  /** Adds GET handlers on this path. */
+  /** Adds GET handlers. */
   get(...handlers: HandlerParam[]): this {
-    this.router.get(this.path, ...handlers);
-    return this;
+    return this.add(HTTP_METHODS.GET, handlers);
   }
 
-  /** Adds POST handlers on this path. */
+  /** Adds POST handlers. */
   post(...handlers: HandlerParam[]): this {
-    this.router.post(this.path, ...handlers);
-    return this;
+    return this.add(HTTP_METHODS.POST, handlers);
   }
 
-  /** Adds PUT handlers on this path. */
+  /** Adds PUT handlers. */
   put(...handlers: HandlerParam[]): this {
-    this.router.put(this.path, ...handlers);
-    return this;
+    return this.add(HTTP_METHODS.PUT, handlers);
   }
 
-  /** Adds DELETE handlers on this path. */
+  /** Adds DELETE handlers. */
   delete(...handlers: HandlerParam[]): this {
-    this.router.delete(this.path, ...handlers);
-    return this;
+    return this.add(HTTP_METHODS.DELETE, handlers);
   }
 
-  /** Adds PATCH handlers on this path. */
+  /** Adds PATCH handlers. */
   patch(...handlers: HandlerParam[]): this {
-    this.router.patch(this.path, ...handlers);
-    return this;
+    return this.add(HTTP_METHODS.PATCH, handlers);
   }
 
-  /** Adds HEAD handlers on this path. */
+  /** Adds HEAD handlers. */
   head(...handlers: HandlerParam[]): this {
-    this.router.head(this.path, ...handlers);
-    return this;
+    return this.add(HTTP_METHODS.HEAD, handlers);
   }
 
-  /** Adds OPTIONS handlers on this path. */
+  /** Adds OPTIONS handlers. */
   options(...handlers: HandlerParam[]): this {
-    this.router.options(this.path, ...handlers);
+    return this.add(HTTP_METHODS.OPTIONS, handlers);
+  }
+
+  /** Whether the route has handlers for `method`; HEAD uses GET's when it has none, like Express. */
+  _handlesMethod(method?: string): boolean {
+    if (this.methods._all) return true;
+    let name = typeof method === "string" ? method.toLowerCase() : method;
+    if (name === HTTP_METHODS.HEAD && !this.methods.head) name = HTTP_METHODS.GET;
+    return Boolean(name && this.methods[name]);
+  }
+
+  /** The route's methods in upper case, HEAD with GET, for an automatic OPTIONS answer. */
+  _methods(): string[] {
+    const methods = Object.keys(this.methods);
+    if (this.methods.get && !this.methods.head) methods.push(HTTP_METHODS.HEAD);
+    return methods.map((method) => method.toUpperCase());
+  }
+
+  /**
+   * Runs the handlers for the request's method, like Express's
+   * `route.dispatch()`: four-parameter handlers only get errors, a throw or
+   * rejected promise is `next(err)`, `next("route")` leaves the route and
+   * `next("router")` its router. `done` gets whatever is left. Sets
+   * `req.route` to this route.
+   */
+  dispatch(req: any, res: any, done: (err?: any) => void) {
+    const stack = this.stack;
+    if (stack.length === 0) return done();
+
+    let method = typeof req.method === "string" ? req.method.toLowerCase() : req.method;
+    if (method === HTTP_METHODS.HEAD && !this.methods.head) method = HTTP_METHODS.GET;
+    req.route = this;
+
+    let index = 0;
+    // Like Express, a long synchronous run goes on on the next tick now and then.
+    let sync = 0;
+    const next = (err?: any): void => {
+      if (err === "route") return done();
+      if (err === "router") return done(err);
+      if (++sync > 100) {
+        setImmediate(next, err);
+        return;
+      }
+
+      while (index < stack.length) {
+        const layer = stack[index++];
+        if (layer.method && layer.method !== method) continue;
+        if (Boolean(err) !== (layer.handle.length === 4)) continue;
+        invoke(layer.handle, err, req, res, once(next));
+        sync = 0;
+        return;
+      }
+
+      done(err);
+    };
+    next();
+  }
+
+  /**
+   * Adds handlers for a method, `undefined` for all of them.
+   *
+   * @throws Express's TypeErrors without handlers, or for one that isn't a function.
+   */
+  private add(method: string | undefined, handlers: HandlerParam[]): this {
+    const flat = (handlers as unknown[]).flat(Infinity) as AnyHandler[];
+    if (flat.length === 0) throw new TypeError("argument handler is required");
+    if (flat.some((handle) => typeof handle !== "function")) throw new TypeError("argument handler must be a function");
+
+    for (const handle of flat) this.stack.push({ method, handle });
+    this.methods[method ?? "_all"] = true;
+    version++;
     return this;
   }
 }
+
+/** The old name of {@link Route}, from before routes were Express's Route. */
+export const RouteBuilder = Route;
+export type RouteBuilder = Route;
 
 /**
  * Like an Express router, a router is middleware itself:
@@ -372,7 +455,7 @@ export class PypeRouter {
   all(path: PathParam, ...handlers: RouteHandler[]): this;
   all(path: PathParam, ...handlers: HandlerParam[]): this;
   all(path: PathParam, ...handlers: HandlerParam[]): this {
-    return this.addRoute(path, METHODS, handlers);
+    return this.addRoute(path, undefined, handlers);
   }
 
   /**
@@ -384,7 +467,7 @@ export class PypeRouter {
   get(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
   get(path: PathParam, ...handlers: HandlerParam[]): this;
   get(path: PathParam, ...handlers: HandlerParam[]): this {
-    return this.addRoute(path, [HTTP_METHODS.GET], handlers);
+    return this.addRoute(path, HTTP_METHODS.GET, handlers);
   }
 
   /**
@@ -396,7 +479,7 @@ export class PypeRouter {
   post(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
   post(path: PathParam, ...handlers: HandlerParam[]): this;
   post(path: PathParam, ...handlers: HandlerParam[]): this {
-    return this.addRoute(path, [HTTP_METHODS.POST], handlers);
+    return this.addRoute(path, HTTP_METHODS.POST, handlers);
   }
 
   /**
@@ -408,7 +491,7 @@ export class PypeRouter {
   put(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
   put(path: PathParam, ...handlers: HandlerParam[]): this;
   put(path: PathParam, ...handlers: HandlerParam[]): this {
-    return this.addRoute(path, [HTTP_METHODS.PUT], handlers);
+    return this.addRoute(path, HTTP_METHODS.PUT, handlers);
   }
 
   /**
@@ -420,7 +503,7 @@ export class PypeRouter {
   delete(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
   delete(path: PathParam, ...handlers: HandlerParam[]): this;
   delete(path: PathParam, ...handlers: HandlerParam[]): this {
-    return this.addRoute(path, [HTTP_METHODS.DELETE], handlers);
+    return this.addRoute(path, HTTP_METHODS.DELETE, handlers);
   }
 
   /**
@@ -432,7 +515,7 @@ export class PypeRouter {
   patch(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
   patch(path: PathParam, ...handlers: HandlerParam[]): this;
   patch(path: PathParam, ...handlers: HandlerParam[]): this {
-    return this.addRoute(path, [HTTP_METHODS.PATCH], handlers);
+    return this.addRoute(path, HTTP_METHODS.PATCH, handlers);
   }
 
   /**
@@ -444,7 +527,7 @@ export class PypeRouter {
   head(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
   head(path: PathParam, ...handlers: HandlerParam[]): this;
   head(path: PathParam, ...handlers: HandlerParam[]): this {
-    return this.addRoute(path, [HTTP_METHODS.HEAD], handlers);
+    return this.addRoute(path, HTTP_METHODS.HEAD, handlers);
   }
 
   /**
@@ -456,7 +539,7 @@ export class PypeRouter {
   options(path: PathParam, ...handlers: Array<RouteHandler | RouteHandler[]>): this;
   options(path: PathParam, ...handlers: HandlerParam[]): this;
   options(path: PathParam, ...handlers: HandlerParam[]): this {
-    return this.addRoute(path, [HTTP_METHODS.OPTIONS], handlers);
+    return this.addRoute(path, HTTP_METHODS.OPTIONS, handlers);
   }
 
   /**
@@ -464,8 +547,11 @@ export class PypeRouter {
    *
    * @example router.route("/users").get(list).post(create)
    */
-  route(path: PathParam) {
-    return new RouteBuilder(path, this);
+  route(path: PathParam): Route {
+    const route = new Route(path);
+    this.stack.push({ type: "route", path, route });
+    version++;
+    return route;
   }
 
   /**
@@ -539,8 +625,8 @@ export class PypeRouter {
             pathPattern,
             ownPath: typeof path === "string" ? path : undefined,
             baseUrl: trimSlashes(basePath),
-            methods: entry.methods,
-            handlers: [...entry.handlers],
+            methods: routeMethods(entry.route),
+            route: entry.route,
             routers: chain,
             keys,
             mounts,
@@ -558,17 +644,15 @@ export class PypeRouter {
    *
    * @throws When no handlers are given or one isn't a function.
    */
-  private addRoute(path: PathParam, methods: string[], handlers: HandlerParam[]) {
-    const flat = (handlers as unknown[]).flat(Infinity) as AnyHandler[];
-
-    if (flat.length === 0) throw new TypeError("argument handler is required");
-    if (flat.some((h) => typeof h !== "function")) throw new TypeError("argument handler must be a function");
-
-    this.stack.push({ type: "route", path, methods, handlers: flat });
+  private addRoute(path: PathParam, method: string | undefined, handlers: HandlerParam[]) {
+    // Like Express, each one is a route of its own; checked before it is registered.
+    const route = new Route(path);
+    if (method) (route as any).add(method, handlers);
+    else route.all(...handlers);
+    this.stack.push({ type: "route", path, route });
     version++;
     return this;
-  }
-}
+  }}
 
 // Every other HTTP method gets a route method too, like in Express.
 for (const method of METHODS) {
@@ -577,15 +661,14 @@ for (const method of METHODS) {
     configurable: true,
     writable: true,
     value(this: PypeRouter, path: PathParam, ...handlers: HandlerParam[]) {
-      return (this as any).addRoute(path, [method], handlers);
+      return (this as any).addRoute(path, method, handlers);
     },
   });
-  Object.defineProperty(RouteBuilder.prototype, method, {
+  Object.defineProperty(Route.prototype, method, {
     configurable: true,
     writable: true,
-    value(this: RouteBuilder, ...handlers: HandlerParam[]) {
-      (this as any).router[method]((this as any).path, ...handlers);
-      return this;
+    value(this: Route, ...handlers: HandlerParam[]) {
+      return (this as any).add(method, handlers);
     },
   });
 }
@@ -599,6 +682,12 @@ export function isPathArgument(arg: unknown): boolean {
   let first = arg;
   while (Array.isArray(first) && first.length > 0) first = first[0];
   return typeof first !== "function" && !(first instanceof PypeRouter);
+}
+
+/** The methods a route registers for in the tree; `METHODS` itself for `all()`. */
+function routeMethods(route: Route): string[] {
+  if (route.methods._all) return METHODS;
+  return Object.keys(route.methods);
 }
 
 /** Parameter names of a route path: `/users/:id/*` gives `["id", "*"]`. */

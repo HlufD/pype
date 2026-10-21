@@ -118,7 +118,7 @@ beforeAll(async () => {
       originalUrl: req.originalUrl,
       path: req.path,
       baseUrl: req.baseUrl,
-      route: req.route,
+      route: { path: req.route?.path, methods: { ...req.route?.methods } },
     })),
   );
   app.get("/mounted/inner", reflect((req) => req.path));
@@ -131,7 +131,7 @@ beforeAll(async () => {
       path: req.path,
       url: req.url,
       originalUrl: req.originalUrl,
-      route: req.route,
+      route: { path: req.route?.path, methods: { ...req.route?.methods } },
       params: req.params,
     });
   });
@@ -308,7 +308,7 @@ describe("Request", () => {
       originalUrl: "/urls?x=1",
       path: "/urls",
       baseUrl: "",
-      route: { path: "/urls", method: "get" },
+      route: { path: "/urls", methods: { get: true } },
     });
   });
 
@@ -319,7 +319,7 @@ describe("Request", () => {
       path: "/items/7",
       url: "/items/7?x=1",
       originalUrl: "/shop/items/7?x=1",
-      route: { path: "/items/:id", method: "get" },
+      route: { path: "/items/:id", methods: { get: true } },
       params: { id: "7" },
     });
   });

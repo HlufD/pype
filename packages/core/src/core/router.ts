@@ -150,6 +150,10 @@ export interface RouterEndLayer {
   router: PypeRouter;
   /** Routers this marker belongs to, outermost first, including `router`. */
   routers: PypeRouter[];
+  /** The router's full mount path. */
+  path: string;
+  /** Mount paths of the routers above, the router's own last, for its mount path's `param()` callbacks. */
+  mounts: MountScope[];
   group?: object;
 }
 
@@ -486,13 +490,14 @@ export class PypeRouter {
       if (entry.type === "router") {
         // Each mount path gets its own copy of the router's layers; copy i of
         // every layer shares a group, so only the first matching mount runs it.
-        const copies = paths.map((path) => [
-          ...entry.router.compile(joinPaths(basePath, path as string), chain, [
-            ...mounts,
-            { router: this, keys: paramKeys(path as string), path: joinPaths(basePath, path as string) },
-          ]),
-          { kind: "end", router: entry.router, routers: [...chain, entry.router] } as RouterEndLayer,
-        ]);
+        const copies = paths.map((path) => {
+          const full = joinPaths(basePath, path as string);
+          const scopes = [...mounts, { router: this, keys: paramKeys(path as string), path: full }];
+          return [
+            ...entry.router.compile(full, chain, scopes),
+            { kind: "end", router: entry.router, routers: [...chain, entry.router], path: full, mounts: scopes } as RouterEndLayer,
+          ];
+        });
         copies[0].forEach((_, index) => {
           const shared = group && {};
           for (const copy of copies) layers.push(shared ? { ...copy[index], group: shared } : copy[index]);

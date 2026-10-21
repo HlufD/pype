@@ -660,15 +660,18 @@ export class Pype {
     const route = () => {
       routedUrl = req.url;
       routedMethod = req.method;
-      method = (req.method || "GET").toLowerCase();
+      // Like Express, a request without a method only reaches all() routes.
+      const methodless = typeof req.method !== "string" || req.method === "";
+      method = methodless ? "" : req.method!.toLowerCase();
 
       match =
-        this.routes.match(req.path, method) ??
+        this.routes.match(req.path, methodless ? HTTP_METHODS.GET : method) ??
         (method === HTTP_METHODS.HEAD
           ? this.routes.match(req.path, HTTP_METHODS.GET)
           : null);
 
-      const matched = match ? this.routeLayers.get(match.handlers)! : [];
+      let matched = match ? this.routeLayers.get(match.handlers)! : [];
+      if (methodless) matched = matched.filter((layer) => layer.methods === METHODS);
 
       // Like Express, a route whose path matches but whose params fail to
       // decode raises a 400 for every method, not only the ones it handles.
@@ -743,6 +746,20 @@ export class Pype {
         if (layer.group && ranGroups?.has(layer.group)) continue;
 
         if (layer.kind === "end") {
+          // Like Express, a mount path's param() callbacks run when the path
+          // matches, even if nothing in the router did; cached, they don't
+          // run twice.
+          if (!err && layer.mounts.some((scope) => scope.keys.length > 0 && scope.router.hasParams)) {
+            if (matchesPrefix(req.path, layer.path, this.caseSensitive)) {
+              current = layer;
+              this.enterParams(req, res, layer, {}, [], req.path, getParamCalls, (error) => {
+                if (error) return next(error);
+                if (!routerDone(layer.router)) next();
+              });
+              sync = 0;
+              return;
+            }
+          }
           if (!err && routerDone(layer.router)) return;
           continue;
         }
@@ -915,8 +932,12 @@ export class Pype {
     const res = rawRes as Response;
     const url = req.url || "/";
     const queryStart = url.indexOf("?");
-    const rawPath = queryStart === -1 ? url : url.slice(0, queryStart);
-    const path = rawPath.includes("//") ? rawPath.replace(/\/{2,}/g, "/") : rawPath;
+    // Like Express, an absolute URL (as sent to proxies) is routed by its
+    // path, and req.url keeps its scheme and host in front.
+    const host = protohostOf(url);
+    const rawPath = url.slice(host.length, queryStart === -1 ? url.length : queryStart);
+    const collapsed = rawPath.includes("//") ? rawPath.replace(/\/{2,}/g, "/") : rawPath;
+    const path = collapsed || "/";
     const parser = this.settings["query parser fn"];
     // Inside another Pype app, req.query is parsed again only with another parser.
     const parseQuery =
@@ -929,7 +950,7 @@ export class Pype {
     req.res = res;
     req.originalUrl = (mounted && req.originalUrl) || url;
     req.path = path;
-    req.url = path === rawPath ? url : path + url.slice(rawPath.length);
+    req.url = collapsed === rawPath ? url : host + collapsed + url.slice(host.length + rawPath.length);
     if (parseQuery) req.query = parser(queryStart === -1 ? null : url.slice(queryStart + 1));
     req.baseUrl = (mounted && req.baseUrl) || "";
     req.params = {};
@@ -1006,7 +1027,7 @@ export class Pype {
   private enterParams(
     req: Request,
     res: Response,
-    layer: RouteLayer | MiddlewareLayer,
+    layer: Pick<RouteLayer, "mounts" | "routers" | "caseMask">,
     params: Record<string, string>,
     keys: string[],
     requestPath: string,
@@ -1401,6 +1422,7 @@ function routeMatchesPath(layer: RouteLayer, path: string, treeLayers: Set<Route
 
 /** Whether a route handles a method, HEAD falling back to GET like Express. */
 function handlesMethod(layer: RouteLayer, method: string) {
+  if (method === "") return layer.methods === METHODS;
   if (layer.methods.includes(method)) return true;
   return method === HTTP_METHODS.HEAD && layer.methods.includes(HTTP_METHODS.GET);
 }
@@ -1602,7 +1624,9 @@ function unmount(req: Request, url: string | undefined, path: string, baseUrl: s
     req.url = url;
     req.path = path;
   } else {
-    req.url = req.baseUrl.slice(baseUrl.length) + (req.url ?? "");
+    const rewritten = req.url ?? "";
+    const host = protohostOf(rewritten);
+    req.url = host + req.baseUrl.slice(baseUrl.length) + rewritten.slice(host.length);
     req.path = pathOf(req.url);
   }
   req.baseUrl = baseUrl;
@@ -1611,8 +1635,21 @@ function unmount(req: Request, url: string | undefined, path: string, baseUrl: s
 /** The path of a URL, without the query and with duplicate slashes collapsed, see {@link Pype.prepare}. */
 function pathOf(url: string) {
   const queryStart = url.indexOf("?");
-  const path = queryStart === -1 ? url : url.slice(0, queryStart);
-  return path.includes("//") ? path.replace(/\/{2,}/g, "/") : path;
+  const path = url.slice(protohostOf(url).length, queryStart === -1 ? url.length : queryStart);
+  return (path.includes("//") ? path.replace(/\/{2,}/g, "/") : path) || "/";
+}
+
+/**
+ * The scheme and host of an absolute URL like `http://example.com/a`, `""`
+ * for a path, like Express's router.
+ */
+function protohostOf(url: string) {
+  if (url.length === 0 || url[0] === "/") return "";
+  const queryStart = url.indexOf("?");
+  const schemeEnd = url.slice(0, queryStart === -1 ? url.length : queryStart).indexOf("://");
+  if (schemeEnd === -1) return "";
+  const pathStart = url.indexOf("/", schemeEnd + 3);
+  return pathStart === -1 ? url : url.slice(0, pathStart);
 }
 
 /** The query of a URL, `null` without a `?`. */
@@ -1629,7 +1666,9 @@ function mount(req: Request, base: string, caseSensitive: CaseSensitivity = true
   req.baseUrl = normalizeBase(req.baseUrl + prefix);
   req.path = req.path.slice(prefix.length) || "/";
 
+  // An absolute URL keeps its scheme and host in front, like Express.
   const url = req.url || "/";
-  const rest = url.slice(prefix.length);
-  req.url = rest.startsWith("?") || rest === "" ? `/${rest}` : rest;
+  const host = protohostOf(url);
+  const rest = url.slice(host.length + prefix.length);
+  req.url = host ? host + rest : rest.startsWith("?") || rest === "" ? `/${rest}` : rest;
 }

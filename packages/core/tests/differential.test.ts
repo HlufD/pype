@@ -937,6 +937,64 @@ describe("routing and params match Express", () => {
     it.each(["/caseless/USERS/ada", "/strict/x/", "/loose/x"])("OPTIONS %s", (path) => same(path, { method: "OPTIONS" }, pair));
   });
 
+  it("a mount path's param() callbacks run even when nothing in the router matches", async () => {
+    const pair = await startPair((app, kind) => {
+      const k = kit(kind);
+      app.param("user", (req: any, _res: any, next: any, user: string) => {
+        (req.users ??= []).push(user);
+        next();
+      });
+      app.use("/foo/:user/", k.Router());
+      const sub = k.Router();
+      sub.get("/bar", (_req: any, _res: any, next: any) => next());
+      app.use("/:user/bob/", sub);
+      app.use((req: any, res: any) => res.json({ users: req.users ?? [] }));
+    });
+    try {
+      for (const path of ["/foo/bob/bar", "/foo/x/y", "/a/bob/c", "/nothing"]) await same(path, {}, pair);
+    } finally {
+      await Promise.all([pair.express.close(), pair.pype.close()]);
+    }
+  });
+
+  it.each(["http://example.com/blog/post/1", "http://example.com/blog/post/1?x=1", "http://example.com", "http://example.com/json?y=2", "https://a.test:8080/blog/x"])(
+    "an absolute URL in the request line: %s",
+    async (url) => {
+      const pair = await startPair((app, kind) => {
+        const k = kit(kind);
+        const reply = (where: string) => (req: any, res: any) =>
+          res.json({ where, url: req.url, path: req.path, baseUrl: req.baseUrl, originalUrl: req.originalUrl, query: req.query });
+        app.use("/blog", reply("blog middleware"));
+        const router = k.Router();
+        router.get("/json", reply("router route"));
+        app.use(router);
+        app.use(reply("fallback"));
+      });
+      try {
+        await same(url, {}, pair);
+      } finally {
+        await Promise.all([pair.express.close(), pair.pype.close()]);
+      }
+    },
+  );
+
+  it("a request without a method only reaches all() routes and middleware", async () => {
+    for (const Router of [express.Router, (options?: object) => new PypeRouter(options)] as any[]) {
+      const ran: string[] = [];
+      const router = Router();
+      const mark = (name: string) => (_req: any, _res: any, next: any) => {
+        ran.push(name);
+        next();
+      };
+      router.get("/foo", mark("get"));
+      router.all("/foo", mark("all"));
+      router.post("/foo", mark("post"));
+      router.use(mark("use"));
+      await new Promise<void>((resolve, reject) => router.handle({ url: "/foo" }, {}, (err: any) => (err ? reject(err) : resolve())));
+      expect(ran).toEqual(["all", "use"]);
+    }
+  });
+
   it.each(["POST", "PUT", "OPTIONS", "HEAD"])("a param that fails to decode answers 400 for %s too", async (method) => {
     for (const path of ["/params/%ZZ", "/params/%", "/params/%E0%A4%A", "/params/a%20b"]) await same(path, { method });
   });

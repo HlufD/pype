@@ -484,6 +484,10 @@ describe("redirects match Express", () => {
     "//evil.example/path",
     "/%0d%0aSet-Cookie:%20x=1",
     "/a?b=\"c\"&d='e'",
+    "http://google.com\\@apple.com",
+    "https://google.com/foo\\bar\\baz",
+    "/[brackets]/%zz/%e2%98%83/\u2603",
+    "file:///etc\\passwd",
   ];
   const accepts = [undefined, "text/html", "text/plain", "application/json", "*/*"];
 
@@ -492,6 +496,15 @@ describe("redirects match Express", () => {
       same(`/redirect?to=${encodeURIComponent(to)}`, { headers: accept === undefined ? {} : { Accept: accept } }),
     );
   }
+
+  it("res.redirect() to a URL with a lone surrogate", async () => {
+    const pair = await startPair((app) => app.get("/", (_req: any, res: any) => res.redirect("/lone\ud800surrogate")));
+    try {
+      await same("/", {}, pair);
+    } finally {
+      await Promise.all([pair.express.close(), pair.pype.close()]);
+    }
+  });
 
   it("res.redirect(301, url) and HEAD", async () => {
     await same("/redirect-301");

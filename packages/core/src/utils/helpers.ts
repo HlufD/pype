@@ -689,9 +689,19 @@ function generateStrongETag(
   return `"${length.toString(16)}-${hash}"`;
 }
 
-/** Percent-encodes a URL without double-encoding existing escapes. */
+/** Characters the `encodeurl` package encodes: those not allowed in a URL, and `%` that doesn't start an escape. */
+const URL_ENCODE_CHARS = /(?:[^\x21\x23-\x3B\x3D\x3F-\x5F\x61-\x7A\x7C\x7E]|%(?:[^0-9A-Fa-f]|[0-9A-Fa-f][^0-9A-Fa-f]|$))+/g;
+
+/** A lone half of a surrogate pair, which `encodeURI` can't encode. */
+const UNMATCHED_SURROGATE = /(^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]|[\uD800-\uDBFF]([^\uDC00-\uDFFF]|$)/g;
+
+/**
+ * Percent-encodes a URL like the `encodeurl` package Express uses: only
+ * what can't be in a URL, keeping existing escapes and characters like `\`
+ * and `[`, so a URL isn't changed into a different one.
+ */
 function encodeUrl(url: string): string {
-  return encodeURI(url).replace(/%25([0-9A-Fa-f]{2})/g, "%$1");
+  return String(url).replace(UNMATCHED_SURROGATE, "$1\uFFFD$2").replace(URL_ENCODE_CHARS, encodeURI);
 }
 
 /** Escapes `&`, `<`, `>`, `"` and `'` for use in HTML. */

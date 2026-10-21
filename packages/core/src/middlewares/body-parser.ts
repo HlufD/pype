@@ -139,8 +139,7 @@ function readBody(req: Request, limit: number, encoding: string): Promise<Buffer
   return new Promise((resolve, reject) => {
     const declared = Number(req.headers["content-length"]);
     if (encoding === "identity" && !Number.isNaN(declared) && declared > limit) {
-      req.resume();
-      return reject(tooLarge(limit, declared));
+      return afterRequest(req, () => reject(tooLarge(limit, declared)));
     }
 
     const decompressor = encoding === "identity" ? null : DECOMPRESSORS[encoding]();
@@ -164,11 +163,12 @@ function readBody(req: Request, limit: number, encoding: string): Promise<Buffer
       }
     };
 
-    // Drops the rest of the request so the connection can be reused.
+    // Like body-parser, the rest of the request is read off first, so the
+    // error answer doesn't arrive while the client is still sending, and the
+    // connection can be reused.
     const fail = (error: BodyParseError) => {
       cleanup();
-      req.resume();
-      reject(error);
+      afterRequest(req, () => reject(error));
     };
 
     const onData = (chunk: Buffer) => {
@@ -178,6 +178,16 @@ function readBody(req: Request, limit: number, encoding: string): Promise<Buffer
     };
 
     const onEnd = () => {
+      // Like raw-body: a body that isn't as long as Content-Length says.
+      if (!decompressor && !Number.isNaN(declared) && received !== declared) {
+        return fail(
+          Object.assign(new BodyParseError(400, "request size did not match content length", "request.size.invalid"), {
+            expected: declared,
+            length: declared,
+            received,
+          }),
+        );
+      }
       cleanup();
       resolve(Buffer.concat(chunks));
     };
@@ -207,6 +217,22 @@ function readBody(req: Request, limit: number, encoding: string): Promise<Buffer
 }
 
 /** A 400 for a client that disconnected mid-body, like `raw-body`. */
+/** Reads off the rest of a request, then calls `done`, like body-parser's dump(). */
+function afterRequest(req: Request, done: () => void) {
+  if (req.complete || req.readableEnded || req.destroyed) return done();
+  let called = false;
+  const once = () => {
+    if (called) return;
+    called = true;
+    req.removeListener("end", once);
+    req.removeListener("close", once);
+    done();
+  };
+  req.on("end", once);
+  req.on("close", once);
+  req.resume();
+}
+
 function aborted(received: number) {
   return Object.assign(new BodyParseError(400, "request aborted", "request.aborted"), {
     code: "ECONNABORTED",
@@ -232,6 +258,7 @@ const LATIN1 = new Set(["iso-8859-1", "iso8859-1", "iso88591", "latin1", "l1", "
 function decode(body: Buffer, charset: string): string | null {
   if (LATIN1.has(charset)) return body.toString("latin1");
   if (UTF32.has(charset)) return decodeUtf32(body, charset);
+  if (charset === "utf-16" || charset === "utf16") return new TextDecoder(utf16Endianness(body)).decode(body);
   try {
     return new TextDecoder(charset).decode(body);
   } catch {
@@ -241,6 +268,24 @@ function decode(body: Buffer, charset: string): string | null {
 
 /** UTF-32 names; TextDecoder has no UTF-32, `iconv-lite` does. */
 const UTF32 = new Set(["utf-32", "utf32", "utf-32le", "utf32le", "utf-32be", "utf32be"]);
+
+/**
+ * The byte order of a "utf-16" body, like iconv-lite: from a byte order
+ * mark, else from where the zero bytes of ASCII characters are in its first
+ * 64 bytes, little-endian when that doesn't tell.
+ */
+function utf16Endianness(body: Buffer): "utf-16be" | "utf-16le" {
+  if (body[0] === 0xfe && body[1] === 0xff) return "utf-16be";
+  if (body[0] === 0xff && body[1] === 0xfe) return "utf-16le";
+  let big = 0;
+  let little = 0;
+  const end = Math.min(body.length - (body.length % 2), 64);
+  for (let i = 0; i < end; i += 2) {
+    if (body[i] === 0 && body[i + 1] !== 0) big++;
+    if (body[i] !== 0 && body[i + 1] === 0) little++;
+  }
+  return big > little ? "utf-16be" : "utf-16le";
+}
 
 /**
  * Decodes UTF-32 like `iconv-lite`: the byte order comes from the name or a
@@ -305,7 +350,9 @@ function createParser(
       : (req: Request) => Boolean(req.is(...[type].flat()));
 
   return async (req, res, next) => {
-    if (req._body || req.body !== undefined || req.readableEnded || !shouldParse(req)) {
+    // Like body-parser, requests without a body are skipped before a type
+    // function is asked.
+    if (req._body || req.body !== undefined || req.readableEnded || !hasBody(req) || !shouldParse(req)) {
       return next();
     }
 
@@ -322,7 +369,13 @@ function createParser(
       return next(Object.assign(new BodyParseError(415, message, "encoding.unsupported"), { encoding }));
     }
 
+    // Like body-parser, verify only sees bodies whose charset can be decoded.
+    if (verify && config.isValidCharset && decode(Buffer.alloc(0), charset) === null) {
+      return next(unsupportedCharset(charset));
+    }
+
     let body: unknown;
+    let decoded: string | Buffer | null = null;
     try {
       const raw = await readBody(req, limit, encoding);
 
@@ -330,24 +383,27 @@ function createParser(
         try {
           verify(req, res, raw, config.isValidCharset ? charset : null);
         } catch (error) {
-          const verifyError = error as Error & { type?: string };
+          // Like body-parser, a status the error has wins over 403.
+          const verifyError = error as Error & { type?: string; status?: number; statusCode?: number };
+          const status = validStatus(verifyError.status ?? verifyError.statusCode) ?? 403;
           return next(
-            Object.assign(new BodyParseError(403, verifyError.message, verifyError.type || "entity.verify.failed"), {
+            Object.assign(new BodyParseError(status, verifyError.message, verifyError.type || "entity.verify.failed"), {
               body: raw,
+              expose: status < 500,
             }),
           );
         }
       }
 
-      const decoded = config.isValidCharset ? decode(raw, charset) : raw;
+      decoded = config.isValidCharset ? decode(raw, charset) : raw;
       if (decoded === null) return next(unsupportedCharset(charset));
       body = parse(decoded, charset);
     } catch (error) {
-      return next(
-        error instanceof BodyParseError
-          ? error
-          : new BodyParseError(400, (error as Error).message),
-      );
+      const parseError =
+        error instanceof BodyParseError ? error : new BodyParseError(400, (error as Error).message);
+      // Like body-parser, a body that fails to parse is on the error.
+      if (decoded !== null && parseError.body === undefined) parseError.body = decoded;
+      return next(parseError);
     }
 
     req._body = true;
@@ -357,6 +413,16 @@ function createParser(
 }
 
 /** First non-whitespace character, the check `body-parser` uses for strict mode. */
+/** Whether a request has a body, like type-is: a Transfer-Encoding or a numeric Content-Length. */
+function hasBody(req: Request) {
+  return req.headers["transfer-encoding"] !== undefined || !Number.isNaN(Number(req.headers["content-length"] ?? NaN));
+}
+
+/** An HTTP error status, `undefined` for anything else. */
+function validStatus(status: unknown) {
+  return typeof status === "number" && status >= 400 && status < 600 ? status : undefined;
+}
+
 const FIRST_CHAR = /^[\x20\x09\x0a\x0d]*([^\x20\x09\x0a\x0d])/;
 
 /**
@@ -422,10 +488,11 @@ export function urlencoded(opts?: UrlencodedOptions): Middleware {
   const extended = Boolean(options.extended);
   let parameterLimit = options.parameterLimit ?? 1000;
   const depth = extended ? (options.depth ?? 32) : 0;
-  if (Number.isNaN(parameterLimit) || parameterLimit < 1) {
+  // Like body-parser, anything that isn't a number, "foo" included, is rejected.
+  if (Number.isNaN(Number(parameterLimit)) || parameterLimit < 1) {
     throw new TypeError("option parameterLimit must be a positive number");
   }
-  if (Number.isNaN(depth) || depth < 0) {
+  if (Number.isNaN(Number(depth)) || depth < 0) {
     throw new TypeError("option depth must be a zero or a positive number");
   }
   if (Number.isFinite(parameterLimit)) parameterLimit = parameterLimit | 0;

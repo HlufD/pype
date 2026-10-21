@@ -1174,6 +1174,58 @@ describe("res.sendFile() options match Express", () => {
   });
 });
 
+describe("body parser details match Express", () => {
+  let pair: Pair;
+
+  beforeAll(async () => {
+    pair = await startPair((app, kind) => {
+      const k = kit(kind);
+      const verify = (_req: any, _res: any, buf: Buffer) => {
+        if (buf[0] === 0x5b) throw Object.assign(new Error("no arrays"), { status: 400 });
+        if (buf[0] === 0x22) throw new Error("no strings");
+      };
+      app.use("/lie", (req: any, _res: any, next: any) => {
+        req.headers["content-length"] = "20";
+        next();
+      });
+      app.post("/lie", k.json(), (req: any, res: any) => res.json(req.body));
+      app.post("/type-fn", k.json({ type: () => { throw new Error("asked without a body"); } }), (_req: any, res: any) => res.send("ok"));
+      app.post("/verify", k.json({ verify, strict: false }), (req: any, res: any) => res.json(req.body));
+      app.post("/text-verify", k.text({ verify }), (req: any, res: any) => res.json(req.body));
+      app.post("/json", k.json(), (req: any, res: any) => res.json(req.body));
+      app.use((err: any, _req: any, res: any, _next: any) =>
+        res.status(err.status ?? 500).json({ type: err.type, message: err.message, body: typeof err.body === "string" ? err.body : err.body?.toString() }),
+      );
+    });
+  });
+
+  afterAll(() => Promise.all([pair.express.close(), pair.pype.close()]));
+
+  const post = (path: string, body: string | Buffer | undefined, headers: Record<string, string> = {}) =>
+    same(path, { method: "POST", body, headers: { "Content-Type": "application/json", ...headers } }, pair);
+
+  it("a Content-Length that doesn't match the body", () => post("/lie", '{"a":1}'));
+  it("a type function isn't asked without a body", () => same("/type-fn", { method: "POST" }, pair));
+  it("verify errors keep their status", () => post("/verify", "[1]"));
+  it("verify errors default to 403", () => post("/verify", '"s"'));
+  it("an unknown charset is a 415 before verify", () =>
+    post("/text-verify", "[1]", { "Content-Type": "text/plain; charset=x-bogus" }));
+  it("a body that fails to parse is on the error", () => post("/json", ' {"user"'));
+  it.each([
+    ["big-endian with a byte order mark", "feff007b0022006e0022003a00228bba0022007d"],
+    ["little-endian with a byte order mark", "fffe7b0022006e0022003a002200ba8b22007d00"],
+    ["big-endian without one", "007b0022006e0022003a00228bba0022007d"],
+    ["little-endian without one", "7b0022006e0022003a002200ba8b22007d00"],
+  ])("utf-16 %s", (_name, hex) => post("/json", Buffer.from(hex, "hex"), { "Content-Type": "application/json; charset=utf-16" }));
+
+  it("rejects a parameterLimit that isn't a number", () => {
+    for (const parser of [express.urlencoded, urlencoded] as any[]) {
+      expect(() => parser({ parameterLimit: "foo" })).toThrow("option parameterLimit must be a positive number");
+      expect(() => parser({ extended: true, depth: "foo" })).toThrow("option depth must be a zero or a positive number");
+    }
+  });
+});
+
 describe("body parser edge cases match Express", () => {
   const post = (path: string, body: string | Buffer, headers: Record<string, string>) =>
     same(path, { method: "POST", body, headers });

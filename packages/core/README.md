@@ -174,7 +174,7 @@ Rules:
   not sent.
 - Two routes may not use different parameter names at the same position,
   such as `/a/:id` and `/a/:userId/x`. This is reported by `listen()`, or by
-  the first request when you use `app.handler`.
+  the first request when the app runs on your own server.
 - A regular expression path is matched like in Express: against the path as
   it is (no slash normalization), in registration order with the other
   layers. Named groups become params with their name, other groups are
@@ -294,16 +294,17 @@ app.listen(3000, "127.0.0.1", () => console.log("local only"));
 `port` `0` picks a free port. Throws if routes conflict (see
 [Route paths](#route-paths)).
 
-#### `app.handler`
+#### The app as a request listener
 
-A request listener, for running Pype on your own server, HTTPS, or in tests:
+Like an Express app, the app is a function `(req, res)`, for running Pype on
+your own server, HTTPS, or in tests. `app.handler` is the same listener.
 
 ```ts
 import { createServer } from "http";
 import { createServer as createHttpsServer } from "https";
 
-createServer(app.handler).listen(3000);
-createHttpsServer({ key, cert }, app.handler).listen(443);
+createServer(app).listen(3000);
+createHttpsServer({ key, cert }, app).listen(443);
 ```
 
 #### `app.use([path], ...handlers)`
@@ -1158,7 +1159,7 @@ process.on("SIGTERM", () => {
 ```ts
 import request from "supertest";
 
-const response = await request(app.handler).get("/users/1");
+const response = await request(app).get("/users/1");
 expect(response.status).toBe(200);
 ```
 
@@ -1186,8 +1187,6 @@ app.use(json());
 | `express.Router()`, `express.Router({ mergeParams: true })` | `new PypeRouter()`, `new PypeRouter({ mergeParams: true })` |
 | `express.json()`, `urlencoded()`, `text()`, `raw()` | `json()`, `urlencoded()`, `text()`, `raw()` |
 | `express.static(dir)`                  | `serveStatic(dir)` from the `serve-static` package |
-| `http.createServer(app)`               | `http.createServer(app.handler)` |
-| `request(app)` in supertest            | `request(app.handler)` |
 
 Compatibility at a glance:
 

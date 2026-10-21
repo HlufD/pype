@@ -227,6 +227,11 @@ answer 400 like in Express.
 
 `src/core/server.ts`
 
+The app is a function, like an Express app: the constructor builds a
+function that calls `handle()`, gives it the class's prototype and the
+fields, and returns it, so `new Pype()` can be passed to
+`http.createServer()`. `Pype.prototype` inherits from `Function.prototype`.
+
 #### State
 
 | Field | Purpose |
@@ -245,7 +250,7 @@ Runs first for every request:
 1. **Prototype upgrade.** `listen()` creates the server with
    `createServer({ IncomingMessage: Request, ServerResponse: Response })`, so
    Node builds Pype objects directly. When Pype runs on someone else's server
-   (`http.createServer(app.handler)`, supertest, HTTPS), the plain objects are
+   (`http.createServer(app)`, supertest, HTTPS), the plain objects are
    given Pype's prototypes with `Object.setPrototypeOf`.
 2. **Per-request state.** Sets `req.app`, `res.app`, `req.res`,
    `req.originalUrl`, `req.baseUrl = ""`, `req.params = {}` and `res.locals`.

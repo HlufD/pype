@@ -32,6 +32,15 @@ import { Engine, View } from "./view";
 type Settings = Record<string, any>;
 
 /**
+ * Like an Express app, a Pype app is a request listener itself:
+ * `http.createServer(app)`, `https.createServer(options, app)` and
+ * `supertest(app)` work.
+ */
+export interface Pype {
+  (req: IncomingMessage, res: ServerResponse): void;
+}
+
+/**
  * An Express-compatible application.
  *
  * @example
@@ -89,6 +98,16 @@ export class Pype {
 
     // Like Express, views are cached in production unless set otherwise.
     if (!("view cache" in settings) && this.get("env") === "production") this.enable("view cache");
+
+    // The app is a function, like Express's: it gets this object's fields
+    // and prototype, and the constructor returns it instead.
+    const app = function (req: IncomingMessage, res: ServerResponse) {
+      app.handle(req, res);
+    } as Pype;
+    Object.setPrototypeOf(app, new.target.prototype);
+    Object.assign(app, this);
+    app.handler = (req, res) => app.handle(req, res);
+    return app;
   }
 
   /**
@@ -157,7 +176,7 @@ export class Pype {
     return server.listen(port, hostnameOrCallback);
   }
 
-  /** Request listener for `http.createServer(app.handler)`, supertest, etc. */
+  /** The app as a request listener; the app itself works as one too. */
   handler = (req: IncomingMessage, res: ServerResponse) => {
     this.handle(req, res);
   };
@@ -841,6 +860,10 @@ export class Pype {
     res.status(status).json({ error: message, status });
   }
 }
+
+// Apps are functions, see the constructor: `app.call()` and
+// `app instanceof Function` work like with Express.
+Object.setPrototypeOf(Pype.prototype, Function.prototype);
 
 /** Creates the route trie with Express's slash handling. */
 function createRouteTable(caseSensitive = true) {

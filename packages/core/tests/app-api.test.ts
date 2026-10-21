@@ -509,3 +509,48 @@ describe("case sensitive routing", () => {
     }
   });
 });
+
+describe("the app as a request listener", () => {
+  it("works with http.createServer(app), like an Express app", async () => {
+    const app = new Pype({ env: "test" });
+    app.get("/users/:id", (req: Request, res: Response) => res.json({ id: req.params.id, pype: req instanceof Request }));
+
+    const server = createServer(app).listen(0, "127.0.0.1");
+    await new Promise((resolve) => server.once("listening", resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const reply = await fetch(`http://127.0.0.1:${port}/users/7`);
+      expect(await reply.json()).toEqual({ id: "7", pype: true });
+      expect((await fetch(`http://127.0.0.1:${port}/missing`)).status).toBe(404);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("is a function and still a Pype instance, sharing state with app.handler", async () => {
+    const app = new Pype({ env: "test" });
+    expect(typeof app).toBe("function");
+    expect(app).toBeInstanceOf(Pype);
+    expect(app).toBeInstanceOf(Function);
+    expect(app.locals.settings).toBe(app.settings);
+
+    app.get("/a", (_req: Request, res: Response) => res.send("a"));
+    const server = createServer((req, res) => app.call(null, req, res)).listen(0, "127.0.0.1");
+    await new Promise((resolve) => server.once("listening", resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      expect(await (await fetch(`http://127.0.0.1:${port}/a`)).text()).toBe("a");
+      // Routes added later reach both entry points.
+      app.get("/b", (_req: Request, res: Response) => res.send("b"));
+      expect(await (await fetch(`http://127.0.0.1:${port}/b`)).text()).toBe("b");
+    } finally {
+      server.close();
+    }
+    const api = await start(app);
+    try {
+      expect((await api.send("/b")).text).toBe("b");
+    } finally {
+      await api.close();
+    }
+  });
+});

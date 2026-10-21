@@ -455,13 +455,19 @@ export class Pype {
 
     const matched = match ? this.routeLayers.get(match.handlers)! : [];
 
+    // Like Express, a route whose path matches but whose params fail to
+    // decode raises a 400 for every method, not only the ones it handles.
+    // Only an escape can fail to decode.
+    const decodeErrors = req.path.includes("%") ? this.decodeErrorsFor(req.path) : null;
+
     // Automatic OPTIONS, like Express's router: each router collects the
     // methods of the routes it passes that match the path but don't handle
     // OPTIONS, and answers with them when it is done.
     const optionsMethods = method === HTTP_METHODS.OPTIONS ? new Map<PypeRouter, Set<string>>() : null;
     const pathLayers = optionsMethods ? this.routeLayersFor(req.path) : null;
     const matchedLayers = optionsMethods ? new Set<Layer>(matched) : null;
-    const layers = this.dispatchOrder(pathLayers ? [...new Set([...matched, ...pathLayers])] : matched);
+    const candidates = new Set([...matched, ...(pathLayers ?? []), ...(decodeErrors?.keys() ?? [])]);
+    const layers = this.dispatchOrder([...candidates]);
 
     let paramCalls: Map<PypeRouter, Record<string, ParamCall>> | undefined;
     const getParamCalls = () => (paramCalls ??= new Map());
@@ -506,6 +512,12 @@ export class Pype {
           // errors raised inside a route reach its error handlers.
           if (err) continue;
 
+          const decodeError = decodeErrors?.get(layer);
+          if (decodeError) {
+            err = decodeError;
+            continue;
+          }
+
           if (optionsMethods && !layer.methods.includes(HTTP_METHODS.OPTIONS) && routeMatchesPath(layer, req.path, pathLayers!)) {
             const router = layer.routers[layer.routers.length - 1];
             if (!optionsMethods.has(router)) optionsMethods.set(router, new Set());
@@ -531,11 +543,6 @@ export class Pype {
             // Only matched route layers are in the order, plus, for OPTIONS,
             // the path's other routes, which were handled above.
             if (matchedLayers && !matchedLayers.has(layer)) continue;
-            // Like Express, a param that fails to decode skips the route with a 400.
-            if (match!.error) {
-              err = match!.error;
-              continue;
-            }
             params = match!.params;
           }
 
@@ -547,14 +554,16 @@ export class Pype {
         if (!matchesPrefix(req.path, layer.path)) continue;
 
         let mounted: PatternMatch | null = null;
-        if (layer.pattern) {
-          try {
+        try {
+          if (layer.pattern) {
             mounted = matchMount(layer.pattern, relativePath(req.path, layer.path));
-          } catch (error) {
-            err = err || error;
-            continue;
+            if (!mounted) continue;
+          } else if (layer.path.includes("/:")) {
+            mounted = mountParams(req.path, layer.path);
           }
-          if (!mounted) continue;
+        } catch (error) {
+          err = err || error;
+          continue;
         }
 
         const isErrorHandler = layer.handle.length === 4;
@@ -591,6 +600,17 @@ export class Pype {
       order.push(this.layers[next]);
     }
     return order;
+  }
+
+  /** Route layers in the tree that match `path` for some method but whose params fail to decode, with the error. */
+  private decodeErrorsFor(path: string): Map<RouteLayer, Error> | null {
+    let found: Map<RouteLayer, Error> | null = null;
+    for (const method of Object.values(HTTP_METHODS)) {
+      const match = this.routes.match(path, method);
+      if (!match?.error) continue;
+      for (const layer of this.routeLayers.get(match.handlers) ?? []) (found ??= new Map()).set(layer, match.error);
+    }
+    return found;
   }
 
   /** Route layers in the tree that match `path` for any method, for automatic OPTIONS. */
@@ -960,7 +980,7 @@ function decodeParam(value: string | undefined) {
 
 /** The request path below a mount path. */
 function relativePath(path: string, mountPath: string) {
-  return path.slice(normalizeBase(mountPath).length) || "/";
+  return path.slice((matchedPrefix(path, mountPath) ?? normalizeBase(mountPath)).length) || "/";
 }
 
 /** Whether a route's path matches the request, whatever the method; for automatic OPTIONS. */
@@ -1028,14 +1048,48 @@ function normalizeBase(base: string) {
 
 /** `/some` matches `/some` and `/some/...`, but not `/something`. */
 function matchesPrefix(requestPath: string, prefix: string) {
+  return matchedPrefix(requestPath, prefix) !== null;
+}
+
+/**
+ * The start of `requestPath` that a mount path matches, compared segment by
+ * segment so that a `:param` segment matches any one segment: `/r/:org`
+ * matches `/r/acme/42` as `/r/acme`. `null` when it doesn't match.
+ */
+function matchedPrefix(requestPath: string, prefix: string): string | null {
   const base = normalizeBase(prefix);
-  if (base === "") return true;
-  return requestPath === base || requestPath.startsWith(base + "/");
+  if (!base.includes("/:")) {
+    return base === "" || requestPath === base || requestPath.startsWith(base + "/") ? base : null;
+  }
+
+  const expected = base.split("/");
+  const actual = requestPath.split("/");
+  if (actual.length < expected.length) return null;
+  for (let i = 0; i < expected.length; i++) {
+    const matches = expected[i].startsWith(":") ? actual[i] !== "" : actual[i] === expected[i];
+    if (!matches) return null;
+  }
+  return actual.slice(0, expected.length).join("/");
+}
+
+/**
+ * The `:param` values of a mount path like `/orgs/:org`, URL-decoded. Its
+ * `path` is empty: the layer's own path already mounts the matched part.
+ *
+ * @throws A 400 error when a param has a malformed escape.
+ */
+function mountParams(requestPath: string, mountPath: string): PatternMatch {
+  const segments = matchedPrefix(requestPath, mountPath)!.split("/");
+  const params: Record<string, string> = {};
+  normalizeBase(mountPath).split("/").forEach((segment, i) => {
+    if (segment.startsWith(":")) params[segment.slice(1).replace(/\?$/, "")] = decodeParam(segments[i])!;
+  });
+  return { params, path: "" };
 }
 
 /** Strips `base` from the front of `req.url` and `req.path` and appends it to `req.baseUrl`. */
 function mount(req: Request, base: string) {
-  const prefix = normalizeBase(base);
+  const prefix = matchedPrefix(req.path, base) ?? normalizeBase(base);
   if (!prefix) return;
 
   req.baseUrl = normalizeBase(req.baseUrl + prefix);

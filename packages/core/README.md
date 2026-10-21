@@ -316,6 +316,10 @@ app.use(/^\/v(\d+)/, version);          // RegExp mount path, req.params[0] is t
 app.use(onError);                       // four parameters: error middleware
 ```
 
+A mount path can have params, like `app.use("/orgs/:org", tenant)`: each
+matches one path segment, the middleware gets them in `req.params` (and runs
+`param()` callbacks), and `req.baseUrl` is the matched part, `/orgs/acme`.
+
 A RegExp mount path must match at the start of the path and end at a `/` or
 the end of it, like in Express; the matched part becomes `req.baseUrl` and its
 groups `req.params` (and run `param()` callbacks). Mounting a router on a

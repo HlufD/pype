@@ -522,6 +522,25 @@ describe("header injection is rejected like Express", () => {
 });
 
 describe("routing and params match Express", () => {
+  it("a router mounted on a path with a param sees the matched base", async () => {
+    const pair = await startPair((app, kind) => {
+      const router = kit(kind).Router();
+      // Not req.params: Pype merges the mount's params, Express only with mergeParams.
+      const reply = (req: any, res: any) =>
+        res.json({ id: req.params.id, baseUrl: req.baseUrl, url: req.url, path: req.path, originalUrl: req.originalUrl });
+      router.get("/:id", reply);
+      router.use(reply);
+      app.use("/orgs/:org", router);
+    });
+    try {
+      for (const path of ["/orgs/a/42", "/orgs/acme/42", "/orgs/acmecorp/42?x=1", "/orgs/acme", "/orgs/acme/"]) {
+        for (const method of ["GET", "POST"]) await same(path, { method }, pair);
+      }
+    } finally {
+      await Promise.all([pair.express.close(), pair.pype.close()]);
+    }
+  });
+
   it.each([
     "/params/42",
     "/params/a%20b",
@@ -566,6 +585,42 @@ describe("routing and params match Express", () => {
     "/api/admin/users/7?leave=api",
     "/api/admin/users/a%20b",
   ])("nested routers: GET %s", (path) => same(path));
+
+  it.each(["POST", "PUT", "OPTIONS", "HEAD"])("a param that fails to decode answers 400 for %s too", async (method) => {
+    for (const path of ["/params/%ZZ", "/params/%", "/params/%E0%A4%A", "/params/a%20b"]) await same(path, { method });
+  });
+
+  it("middleware mounted on a path with params sees them", async () => {
+    const pair = await startPair((app) => {
+      app.param("org", (req: any, _res: any, next: any, value: string) => {
+        req.seen = (req.seen ?? 0) + 1;
+        next(value === "blocked" ? Object.assign(new Error("no"), { status: 403 }) : undefined);
+      });
+      app.use("/orgs/:org/teams/:team", (req: any, res: any) =>
+        res.json({ params: req.params, seen: req.seen, baseUrl: req.baseUrl, url: req.url }),
+      );
+      app.use("/orgs/:org", (req: any, res: any) => res.json({ params: req.params, seen: req.seen, baseUrl: req.baseUrl }));
+      app.use((err: any, _req: any, res: any, _next: any) => res.status(err.status ?? 500).json({ error: err.status }));
+    });
+    try {
+      for (const path of [
+        "/orgs/acme",
+        "/orgs/acme/x?y=1",
+        "/orgs/caf%C3%A9",
+        "/orgs/%ZZ",
+        "/orgs/blocked",
+        "/orgs/acme/teams/red/members",
+        "/orgs/acme/teams/%ZZ",
+      ]) {
+        for (const method of ["GET", "POST"]) await same(path, { method }, pair);
+      }
+      // An empty param doesn't match; the 404 pages differ.
+      const [fromExpress, fromPype] = await both("/orgs/", {}, pair);
+      expect(fromPype.status).toBe(fromExpress.status);
+    } finally {
+      await Promise.all([pair.express.close(), pair.pype.close()]);
+    }
+  });
 });
 
 describe("body parsers match Express", () => {

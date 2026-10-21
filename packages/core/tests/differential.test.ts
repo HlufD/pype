@@ -842,6 +842,86 @@ describe("routing and params match Express", () => {
     expect(() => new PypeRouter().use("/:a-:b", new PypeRouter())).toThrow("several params in one segment");
   });
 
+  describe.each<[string, Record<string, unknown>]>([
+    ["a case-sensitive, non-strict app", { "case sensitive routing": true, "strict routing": false }],
+    ["an app ignoring case, strict", { "case sensitive routing": false, "strict routing": true }],
+  ])("router caseSensitive and strict options in %s", (_name, settings) => {
+    let pair: Pair;
+
+    beforeAll(async () => {
+      pair = await startPair((app, kind) => {
+        const k = kit(kind);
+        const reply = (where: string) => (req: any, res: any) =>
+          res.json({ where, params: req.params, baseUrl: req.baseUrl, path: req.path, url: req.url });
+
+        // Express's routers don't follow the app, so both get explicit options.
+        const caseless = k.Router({ caseSensitive: false, strict: settings["strict routing"] });
+        caseless.get("/Users/:Name", reply("caseless user"));
+        caseless.get("/", reply("caseless root"));
+        caseless.use("/Mw", (req: any, res: any, next: any) => (req.query.stop ? res.json({ mw: req.url, baseUrl: req.baseUrl }) : next()));
+        app.use("/Caseless", caseless);
+
+        const exact = k.Router({ caseSensitive: true, strict: settings["strict routing"] });
+        exact.get("/Exact", reply("exact"));
+        app.use("/exact", exact);
+
+        // A router with options mounting one with other options.
+        const outer = k.Router({ caseSensitive: false, strict: settings["strict routing"] });
+        const inner = k.Router({ caseSensitive: true, strict: settings["strict routing"] });
+        inner.get("/Leaf", reply("inner leaf"));
+        outer.use("/Inner", inner);
+        app.use("/Outer", outer);
+
+        const strictRouter = k.Router({ caseSensitive: settings["case sensitive routing"], strict: true });
+        strictRouter.get("/", reply("strict root"));
+        strictRouter.get("/x", reply("strict x"));
+        strictRouter.get("/y/", reply("strict y/"));
+        app.use("/strict", strictRouter);
+
+        const loose = k.Router({ caseSensitive: settings["case sensitive routing"], strict: false });
+        loose.get("/x/", reply("loose x/"));
+        app.use("/loose", loose);
+
+        const orgs = k.Router({ caseSensitive: false, strict: settings["strict routing"], mergeParams: true });
+        orgs.get("/Teams/:team", reply("org team"));
+        app.use("/orgs/:org", orgs);
+
+        app.use((req: any, res: any) => res.status(404).json({ notFound: req.path }));
+      }, settings);
+    });
+
+    afterAll(() => Promise.all([pair.express.close(), pair.pype.close()]));
+
+    it.each([
+      "/Caseless/Users/Ada",
+      "/Caseless/users/ADA",
+      "/caseless/users/ada",
+      "/Caseless",
+      "/Caseless/",
+      "/Caseless/mw/a?stop=1",
+      "/Caseless/MW/a?stop=1",
+      "/exact/Exact",
+      "/exact/exact",
+      "/EXACT/Exact",
+      "/Outer/Inner/Leaf",
+      "/outer/INNER/Leaf",
+      "/outer/inner/leaf",
+      "/strict",
+      "/strict/",
+      "/strict/x",
+      "/strict/x/",
+      "/strict/y",
+      "/strict/y/",
+      "/loose/x",
+      "/loose/x/",
+      "/orgs/Acme/teams/Red",
+      "/orgs/acme/TEAMS/red",
+      "/ORGS/acme/teams/red",
+    ])("GET %s", (path) => same(path, {}, pair));
+
+    it.each(["/caseless/USERS/ada", "/strict/x/", "/loose/x"])("OPTIONS %s", (path) => same(path, { method: "OPTIONS" }, pair));
+  });
+
   it.each(["POST", "PUT", "OPTIONS", "HEAD"])("a param that fails to decode answers 400 for %s too", async (method) => {
     for (const path of ["/params/%ZZ", "/params/%", "/params/%E0%A4%A", "/params/a%20b"]) await same(path, { method });
   });
@@ -1349,6 +1429,24 @@ describe("trust proxy matches Express", () => {
 });
 
 describe("documented differences from Express", () => {
+  it("Pype's routers without options follow the app's routing settings, Express's don't", async () => {
+    const settings = { "case sensitive routing": true, "strict routing": true };
+    const pair = await startPair((app, kind) => {
+      const router = kit(kind).Router();
+      router.get("/Item", (_req: any, res: any) => res.send("item"));
+      app.use("/r", router);
+    }, settings);
+    const results: Record<string, number[]> = { express: [], pype: [] };
+    for (const path of ["/r/Item", "/r/item", "/r/Item/"]) {
+      const [fromExpress, fromPype] = await both(path, {}, pair);
+      results.express.push(fromExpress.status);
+      results.pype.push(fromPype.status);
+    }
+    await Promise.all([pair.express.close(), pair.pype.close()]);
+
+    expect(results).toEqual({ express: [200, 200, 200], pype: [200, 404, 404] });
+  });
+
   it("Pype sends X-Powered-By only when the setting is on", async () => {
     for (const settings of [{}, { "x-powered-by": true }, { "x-powered-by": false }]) {
       const pair = await startPair((app) => app.get("/", (_req: any, res: any) => res.send("ok")), settings);

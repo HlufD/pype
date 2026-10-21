@@ -26,7 +26,7 @@ import { Response } from "./response";
 import { generateETag, generateStrongETag, parseQuery } from "../utils/helpers";
 import { parseQs } from "../utils/qs";
 import { compileTrust } from "../utils/trust-proxy";
-import { compilePathPattern } from "../utils/path-pattern";
+import { compilePathPattern, pathKeys } from "../utils/path-pattern";
 import { resolve } from "path";
 import { Engine, View } from "./view";
 
@@ -431,11 +431,35 @@ export class Pype {
     const layers = this.router.compile();
     const routes = createRouteTable(caseSensitive, strict);
 
-    // Paths with several params in one segment are matched by patterns
-    // built with the routing settings, like RegExp paths, outside the tree.
+    // Like Express, each path is matched with the options of the router it
+    // was registered on; routers without options follow the app.
+    const optionsOf = (router: PypeRouter) => ({
+      caseSensitive: router === this.router ? caseSensitive : (router.caseSensitive ?? caseSensitive),
+      strict: router === this.router ? strict : (router.strict ?? strict),
+    });
+
     for (const layer of layers) {
-      if (layer.kind !== "end" && layer.pathPattern) {
-        layer.pattern = compilePathPattern(layer.pathPattern, { caseSensitive, strict, end: layer.kind === "route" });
+      if (layer.kind === "end") continue;
+      const options = optionsOf(layer.routers[layer.routers.length - 1]);
+      layer.caseMask = caseMaskOf(layer, optionsOf, caseSensitive);
+
+      // The tree uses the app's settings. A path its router matches with
+      // other options, or below a mount path that needs a mask, becomes a
+      // pattern below the router's mount path, like paths with several
+      // params in one segment. A middleware path "/" matches anything anyway.
+      const own = layer.ownPath;
+      const otherOptions = options.caseSensitive !== caseSensitive || options.strict !== strict;
+      const needsPattern = layer.kind === "route" ? otherOptions || layer.caseMask : otherOptions && normalizeBase(own ?? "");
+      if (own !== undefined && !layer.pathPattern && needsPattern) {
+        layer.pathPattern = own;
+        layer.keys = pathKeys(own);
+        if (layer.kind === "route") layer.fullPath = layer.baseUrl;
+        else layer.path = layer.base;
+        layer.caseMask = caseMaskOf(layer, optionsOf, caseSensitive);
+      }
+
+      if (layer.pathPattern) {
+        layer.pattern = compilePathPattern(layer.pathPattern, { ...options, end: layer.kind === "route" });
       }
     }
     const routeLayers = new Map<AnyHandler[], RouteLayer[]>();
@@ -578,7 +602,7 @@ export class Pype {
             continue;
           }
 
-          if (optionsMethods && !layer.methods.includes(HTTP_METHODS.OPTIONS) && routeMatchesPath(layer, req.path, pathLayers!, this.caseSensitive)) {
+          if (optionsMethods && !layer.methods.includes(HTTP_METHODS.OPTIONS) && routeMatchesPath(layer, req.path, pathLayers!, layer.caseMask ?? this.caseSensitive)) {
             const router = layer.routers[layer.routers.length - 1];
             if (!optionsMethods.has(router)) optionsMethods.set(router, new Set());
             const methods = optionsMethods.get(router)!;
@@ -591,10 +615,10 @@ export class Pype {
           if (layer.pattern) {
             // The pattern is matched below the router's mount path, which
             // the request must be under, as for middleware.
-            if (!matchesPrefix(req.path, layer.fullPath, this.caseSensitive)) continue;
+            if (!matchesPrefix(req.path, layer.fullPath, layer.caseMask ?? this.caseSensitive)) continue;
             let found: PatternMatch | null;
             try {
-              const path = relativePath(req.path, layer.fullPath, this.caseSensitive);
+              const path = relativePath(req.path, layer.fullPath, layer.caseMask ?? this.caseSensitive);
               found = matchPattern(layer.pattern, path, layer.pathPattern ? layer.keys : undefined);
             } catch (error) {
               // Like Express, a param that fails to decode is a 400 for every method.
@@ -615,16 +639,17 @@ export class Pype {
           return this.runRoute(req, res, layer, params, method, getParamCalls, next);
         }
 
-        if (!matchesPrefix(req.path, layer.path, this.caseSensitive)) continue;
+        const caseSensitive = layer.caseMask ?? this.caseSensitive;
+        if (!matchesPrefix(req.path, layer.path, caseSensitive)) continue;
 
         let mounted: PatternMatch | null = null;
         try {
           if (layer.pattern) {
-            const path = relativePath(req.path, layer.path, this.caseSensitive);
+            const path = relativePath(req.path, layer.path, caseSensitive);
             mounted = matchMount(layer.pattern, path, layer.pathPattern ? layer.keys : undefined);
             if (!mounted) continue;
           } else if (layer.keys.length > 0) {
-            mounted = { params: pickParams(mountParams(req.path, layer.path, this.caseSensitive), layer.keys), path: "" };
+            mounted = { params: pickParams(mountParams(req.path, layer.path, caseSensitive), layer.keys), path: "" };
           }
         } catch (error) {
           err = err || error;
@@ -752,7 +777,7 @@ export class Pype {
     this.enterParams(req, res, layer, params, Object.keys(params), path, getParamCalls, (error) => {
       if (error) return next(error);
 
-      mount(req, layer.path, this.caseSensitive);
+      mount(req, layer.path, layer.caseMask ?? this.caseSensitive);
       if (mounted) mount(req, mounted.path);
 
       const done = once((error?: any) => {
@@ -806,7 +831,9 @@ export class Pype {
         // Each mount path's own segments, so a name used at two levels keeps both values.
         let own: Record<string, string> = {};
         try {
-          if (scope.keys.length > 0) own = pickParams(mountParams(requestPath, scope.path, this.caseSensitive), scope.keys);
+          if (scope.keys.length > 0) {
+            own = pickParams(mountParams(requestPath, scope.path, layer.caseMask ?? this.caseSensitive), scope.keys);
+          }
         } catch (decodeError) {
           return done(decodeError);
         }
@@ -838,7 +865,7 @@ export class Pype {
   ) {
     const { url, path, baseUrl } = req;
     req.route = { path: layer.routePath, method };
-    mount(req, layer.baseUrl, this.caseSensitive);
+    mount(req, layer.baseUrl, layer.caseMask ?? this.caseSensitive);
 
     const leave = (error?: any) => {
       req.url = url;
@@ -1114,12 +1141,12 @@ function decodeParam(value: string | undefined) {
 }
 
 /** The request path below a mount path. */
-function relativePath(path: string, mountPath: string, caseSensitive: boolean) {
+function relativePath(path: string, mountPath: string, caseSensitive: CaseSensitivity) {
   return path.slice((matchedPrefix(path, mountPath, caseSensitive) ?? normalizeBase(mountPath)).length) || "/";
 }
 
 /** Whether a route's path matches the request, whatever the method; for automatic OPTIONS. */
-function routeMatchesPath(layer: RouteLayer, path: string, treeLayers: Set<RouteLayer>, caseSensitive: boolean) {
+function routeMatchesPath(layer: RouteLayer, path: string, treeLayers: Set<RouteLayer>, caseSensitive: CaseSensitivity) {
   if (!layer.pattern) return treeLayers.has(layer);
   if (!matchesPrefix(path, layer.fullPath, caseSensitive)) return false;
   try {
@@ -1212,19 +1239,25 @@ function normalizeBase(base: string) {
 }
 
 /** `/some` matches `/some` and `/some/...`, but not `/something`. */
-function matchesPrefix(requestPath: string, prefix: string, caseSensitive: boolean) {
+function matchesPrefix(requestPath: string, prefix: string, caseSensitive: CaseSensitivity) {
   return matchedPrefix(requestPath, prefix, caseSensitive) !== null;
 }
+
+/** Case sensitivity of a whole path, or of each of its segments, see {@link MiddlewareLayer.caseMask}. */
+type CaseSensitivity = boolean | boolean[];
 
 /**
  * The start of `requestPath` that a mount path matches, compared segment by
  * segment so that a `:param` segment matches any one segment: `/r/:org`
  * matches `/r/acme/42` as `/r/acme`. `null` when it doesn't match.
  *
- * @param caseSensitive - `false` ignores ASCII case. The result is always
- * the request's own text, so `req.baseUrl` keeps its case like in Express.
+ * @param caseSensitive - `false` ignores ASCII case, an array decides it per
+ * segment. The result is always the request's own text, so `req.baseUrl`
+ * keeps its case like in Express.
  */
-function matchedPrefix(requestPath: string, prefix: string, caseSensitive = true): string | null {
+function matchedPrefix(requestPath: string, prefix: string, caseSensitive: CaseSensitivity = true): string | null {
+  if (Array.isArray(caseSensitive)) return matchedPrefixBySegment(requestPath, normalizeBase(prefix), caseSensitive);
+
   const base = caseSensitive ? normalizeBase(prefix) : lowerAscii(normalizeBase(prefix));
   const path = caseSensitive ? requestPath : lowerAscii(requestPath);
   if (!base.includes("/:")) {
@@ -1242,12 +1275,57 @@ function matchedPrefix(requestPath: string, prefix: string, caseSensitive = true
   return requestPath.split("/").slice(0, expected.length).join("/");
 }
 
+/** {@link matchedPrefix} with the case sensitivity of each segment. */
+function matchedPrefixBySegment(requestPath: string, base: string, mask: boolean[]): string | null {
+  const expected = base.split("/");
+  const actual = requestPath.split("/");
+  if (actual.length < expected.length) return null;
+  for (let i = 0; i < expected.length; i++) {
+    const segment = expected[i];
+    const matches = segment.startsWith(":")
+      ? actual[i] !== ""
+      : mask[i] === false
+        ? lowerAscii(actual[i]) === lowerAscii(segment)
+        : actual[i] === segment;
+    if (!matches) return null;
+  }
+  return actual.slice(0, expected.length).join("/");
+}
+
+/**
+ * Whether each segment of a layer's mount path is matched with case, when a
+ * router above it uses another `caseSensitive` than the app; `undefined`
+ * when the app's setting applies to all of them. Segments of a mount path
+ * follow the router it was registered on.
+ */
+function caseMaskOf(
+  layer: RouteLayer | MiddlewareLayer,
+  optionsOf: (router: PypeRouter) => { caseSensitive: boolean },
+  appCaseSensitive: boolean,
+): boolean[] | undefined {
+  const mask: boolean[] = [true];
+  let differs = false;
+  for (const scope of layer.mounts) {
+    const sensitive = optionsOf(scope.router).caseSensitive;
+    differs ||= sensitive !== appCaseSensitive;
+    const count = normalizeBase(scope.path).split("/").length;
+    while (mask.length < count) mask.push(sensitive);
+  }
+
+  const own = optionsOf(layer.routers[layer.routers.length - 1]).caseSensitive;
+  const path = layer.kind === "route" ? (layer.pattern || layer.pathPattern ? layer.baseUrl : layer.fullPath) : layer.path;
+  const count = normalizeBase(path).split("/").length;
+  while (mask.length < count) mask.push(own);
+  differs ||= mask.some((sensitive) => sensitive !== appCaseSensitive);
+  return differs ? mask : undefined;
+}
+
 /**
  * The `:param` values of a mount path like `/orgs/:org`, URL-decoded.
  *
  * @throws A 400 error when a param has a malformed escape.
  */
-function mountParams(requestPath: string, mountPath: string, caseSensitive: boolean): Record<string, string> {
+function mountParams(requestPath: string, mountPath: string, caseSensitive: CaseSensitivity): Record<string, string> {
   const segments = matchedPrefix(requestPath, mountPath, caseSensitive)!.split("/");
   const params: Record<string, string> = {};
   normalizeBase(mountPath).split("/").forEach((segment, i) => {
@@ -1273,7 +1351,7 @@ function mergeParams(enabled: boolean, params: Record<string, string>, parent?: 
 }
 
 /** Strips `base` from the front of `req.url` and `req.path` and appends it to `req.baseUrl`. */
-function mount(req: Request, base: string, caseSensitive = true) {
+function mount(req: Request, base: string, caseSensitive: CaseSensitivity = true) {
   const prefix = matchedPrefix(req.path, base, caseSensitive) ?? normalizeBase(base);
   if (!prefix) return;
 

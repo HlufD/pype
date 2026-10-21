@@ -407,7 +407,16 @@ own layer and they share a `group`. A string with several params in one
 segment (`/:from-:to`) keeps its text in `pathPattern`; `Pype.compile()`
 turns it into `pattern` with the routing settings (`compilePathPattern()`,
 which builds the expression the way `path-to-regexp` does), so it is
-matched like a RegExp path, outside the tree. A router mounted on several paths is
+matched like a RegExp path, outside the tree.
+
+The tree is built with the app's `"case sensitive routing"` and `"strict
+routing"` settings. A router's `caseSensitive` and `strict` options apply to
+the paths registered on it, like in Express, so `Pype.compile()` turns a
+path whose router has other options than the app into a `pathPattern`
+compiled with that router's options, matched below its mount path. When a
+router with other case options sits in the middle of the chain, the layer
+also gets a `caseMask`: the case sensitivity of each segment of its mount
+path, used by `matchedPrefix()` instead of the app's setting. A router mounted on several paths is
 compiled once per path, and copy `i` of each layer shares a group. Mounting a
 router on a RegExp throws, since its layers' paths must be known when the
 tree is built. `param()` stores callbacks in `params` by name.
@@ -870,9 +879,8 @@ before and after.
 
 - Route patterns are the Express 4 style (`:id?`, `*`), not Express 5's
   `{/:id}` and `/*splat`.
-- Routing is case-sensitive by default, unlike Express; `"case sensitive
-  routing": false` and `"strict routing"` cover every router, there are no
-  per-router `caseSensitive` and `strict` options.
+- Routing is case-sensitive by default, unlike Express, and routers without
+  `caseSensitive` or `strict` options follow the app's settings.
 - No routers mounted on a RegExp or on a path with several params in one
   segment, and no mounting another app with `app.use(otherApp)`.
 

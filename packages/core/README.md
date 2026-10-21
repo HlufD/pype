@@ -492,6 +492,17 @@ app.use("/orgs/:org", teams);
 router: `app.param("org", ...)` runs for `app.use("/orgs/:org", teams)`,
 before the router's callbacks.
 
+A router follows the app's `"case sensitive routing"` and `"strict routing"`
+settings. Like in Express, `caseSensitive` and `strict` options set them for
+the paths registered on that router; the path it is mounted on follows the
+router it was mounted on:
+
+```ts
+const files = new PypeRouter({ caseSensitive: false, strict: true });
+files.get("/Readme/", show); // matches /readme/ and /README/, not /readme
+app.use("/files", files);    // matched by the app's settings
+```
+
 `next("router")` inside a router skips the rest of that router and continues
 after it.
 
@@ -1005,9 +1016,9 @@ Set with `app.set(name, value)`, `new Pype({ name: value })`, `app.enable` or
 | `"jsonp callback name"` | `"callback"`                           | Query parameter with the callback of `res.jsonp()`. |
 | `"json escape"`      | `undefined`                              | `true` escapes `<`, `>` and `&` in `res.json()` as `\u003c`, `\u003e` and `\u0026`, so JSON embedded in HTML can't close a `<script>` tag. |
 | `"x-powered-by"`     | `false`                                  | `true` adds `X-Powered-By: Pype` to every response. Express turns it on by default. |
-| `"strict routing"`   | `false`                                  | `true` makes a trailing slash part of the path: `/users/` and `/users` are different routes. Applies to every router in the app. |
+| `"strict routing"`   | `false`                                  | `true` makes a trailing slash part of the path: `/users/` and `/users` are different routes. Routers follow it unless created with a `strict` option. |
 | `"subdomain offset"` | `2`                                      | Number of dot-separated parts removed from the end of the host name for `req.subdomains`. |
-| `"case sensitive routing"` | `true`                             | `false` matches route and mount paths ignoring ASCII case, like Express's default. Applies to every router in the app. |
+| `"case sensitive routing"` | `true`                             | `false` matches route and mount paths ignoring ASCII case, like Express's default. Routers follow it unless created with a `caseSensitive` option. |
 | `"query parser"`     | `"simple"`                               | How `req.query` is parsed: `"simple"` (Node's `querystring`), `"extended"` (`qs` rules: nested objects and arrays), `false` (no parsing) or a function `(query) => object`, which gets `null` without a `?`. |
 | `"views"`            | `"<cwd>/views"`                          | Directory, or list of directories, with the views. |
 | `"view engine"`      | `undefined`                              | Extension for view names without one. |
@@ -1251,11 +1262,12 @@ Differences:
 - Duplicate slashes are always ignored.
 - No `X-Powered-By` header unless the `"x-powered-by"` setting is on; Express
   sends `X-Powered-By: Express` by default.
-- `"strict routing"` covers every router in the app, there is no per-router
-  `strict` option.
 - Routing is case-sensitive unless `"case sensitive routing"` is `false`;
-  Express ignores case by default. The setting covers every router in the
-  app, there is no per-router `caseSensitive` option.
+  Express ignores case by default.
+- Routers created without `caseSensitive` or `strict` options follow the
+  app's `"case sensitive routing"` and `"strict routing"` settings; Express's
+  routers ignore them and default to `false`. With the options, they behave
+  the same.
 - The default 404 and error responses are JSON.
 - A second `next()` call from the same handler is ignored with a warning;
   Express continues with the following layer.

@@ -45,6 +45,10 @@ export function compilePathPattern(
   path: string,
   options: { caseSensitive: boolean; strict: boolean; end: boolean },
 ): RegExp {
+  // Like Express, without strict routing the path's own trailing slash
+  // doesn't count: `/x/` matches `/x` too.
+  if (!options.strict && path !== "/") path = path.replace(/\/+$/, "");
+
   let source = "";
   let backtrack = "";
   let paramInSegment = false;

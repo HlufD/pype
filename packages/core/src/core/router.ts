@@ -47,6 +47,16 @@ export interface RouterOptions {
    * like Express. Default `false`: a router only sees its own paths' params.
    */
   mergeParams?: boolean;
+  /**
+   * Match this router's own paths ignoring case (`false`) or not (`true`),
+   * like Express's option. Default: the app's `"case sensitive routing"`.
+   */
+  caseSensitive?: boolean;
+  /**
+   * Make a trailing slash count in this router's own paths, like Express's
+   * option. Default: the app's `"strict routing"`.
+   */
+  strict?: boolean;
 }
 
 /**
@@ -69,8 +79,17 @@ export interface MiddlewareLayer {
   path: string;
   /** A regular expression mount path, matched against the path below `path`. */
   pattern?: RegExp;
-  /** A string mount path with several params in a segment, compiled into `pattern` by the app. */
+  /** A string mount path matched by a pattern below `path`, compiled into `pattern` by the app. */
   pathPattern?: string;
+  /** The mount path as registered on its router, for a string path. */
+  ownPath?: string;
+  /** The router's mount path, which `path` starts with. */
+  base: string;
+  /**
+   * Whether each segment of `path` is matched with case, when a router it
+   * is nested in has another `caseSensitive` than the app; set by the app.
+   */
+  caseMask?: boolean[];
   /** Shared by the layers of one array mount path, so the middleware runs once per request. */
   group?: object;
   /** The middleware or error middleware. */
@@ -92,8 +111,12 @@ export interface RouteLayer {
   routePath: PathParam;
   /** A regular expression route path, matched against the path below `fullPath`. */
   pattern?: RegExp;
-  /** A string route path with several params in a segment, compiled into `pattern` by the app. */
+  /** A string route path matched by a pattern below `fullPath`, compiled into `pattern` by the app. */
   pathPattern?: string;
+  /** The route path as registered on its router, for a string path. */
+  ownPath?: string;
+  /** See {@link MiddlewareLayer.caseMask}; covers `baseUrl` when the route has a pattern. */
+  caseMask?: boolean[];
   /** Shared by the layers of one array path, so the route runs once per request. */
   group?: object;
   /** Mount path of the route's router, exposed as `req.baseUrl`. */
@@ -205,12 +228,18 @@ export class PypeRouter {
 
   /** Whether `req.params` keeps the params of this router's mount paths, see {@link RouterOptions.mergeParams}. */
   readonly mergeParams: boolean;
+  /** See {@link RouterOptions.caseSensitive}; `undefined` follows the app. */
+  readonly caseSensitive?: boolean;
+  /** See {@link RouterOptions.strict}; `undefined` follows the app. */
+  readonly strict?: boolean;
 
   /**
    * @param options - Router options, see {@link RouterOptions}.
    */
   constructor(options: RouterOptions = {}) {
     this.mergeParams = Boolean(options.mergeParams);
+    if (options.caseSensitive !== undefined) this.caseSensitive = Boolean(options.caseSensitive);
+    if (options.strict !== undefined) this.strict = Boolean(options.strict);
   }
 
   /** `param()` callbacks by parameter name. */
@@ -447,7 +476,19 @@ export class PypeRouter {
           const mount = below ? trimSlashes(basePath) : joinPaths(basePath, path as string);
           const pattern = path instanceof RegExp ? statelessPattern(path) : undefined;
           for (const handle of entry.handlers) {
-            layers.push({ kind: "middleware", path: mount, pattern, pathPattern, handle, routers: chain, keys, mounts, group });
+            layers.push({
+              kind: "middleware",
+              path: mount,
+              pattern,
+              pathPattern,
+              ownPath: typeof path === "string" ? path : undefined,
+              base: trimSlashes(basePath),
+              handle,
+              routers: chain,
+              keys,
+              mounts,
+              group,
+            });
           }
         } else {
           layers.push({
@@ -456,6 +497,7 @@ export class PypeRouter {
             routePath: entry.path,
             pattern: path instanceof RegExp ? statelessPattern(path) : undefined,
             pathPattern,
+            ownPath: typeof path === "string" ? path : undefined,
             baseUrl: trimSlashes(basePath),
             methods: entry.methods,
             handlers: [...entry.handlers],

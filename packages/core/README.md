@@ -1253,6 +1253,7 @@ Compatibility at a glance:
 
 | Express feature | Pype |
 | --- | --- |
+| The app as a request listener, `http.createServer(app)`, `supertest(app)` | Same |
 | Middleware, error middleware, async errors | Same |
 | `next()`, `next(err)`, `next("route")`, `next("router")` | Same; a second `next()` call is ignored |
 | Routers, mount paths, `req.baseUrl` / `path` / `originalUrl` | Same |
@@ -1260,7 +1261,10 @@ Compatibility at a glance:
 | Response API (`send`, `json`, `status`, `set`, `type`, `vary`, `format`, `redirect`, `cookie`, `attachment`, `sendFile`, `download`, ...) | Same, checked by the differential tests |
 | Automatic `OPTIONS` and `HEAD` | Same, also from mounted routers |
 | `app.param()`, `router.param()` | Same |
+| Route methods for every HTTP method (`app.purge()`, `router.propfind()`, ...) | Same |
 | RegExp and array paths | Same, except mounting a router on a RegExp |
+| Several params in one segment (`/:from-:to`, `/:name.:ext`) | Same matching, in registration order; routers can't be mounted on such a path |
+| Router options `mergeParams`, `caseSensitive`, `strict` | Same; routers without them follow the app's settings |
 | `app.engine()`, `app.render()`, `res.render()`, view settings | Same, Express engines work |
 | `"trust proxy"`, `"query parser"` | Same values and results |
 | Body parsers, including compressed bodies and `extended: true` | Same results and errors |
@@ -1269,7 +1273,7 @@ Compatibility at a glance:
 | Case sensitivity | Case-sensitive by default; `"case sensitive routing": false` for Express's default |
 | Duplicate slashes | Always ignored |
 | Trailing slashes | Same, ignored unless `"strict routing"` |
-| `"etag"`, `"json escape"`, `"json spaces"`, `"json replacer"` | Same values and results |
+| `"etag"`, `"json escape"`, `"json spaces"`, `"json replacer"`, `"jsonp callback name"` | Same values and results |
 | `"x-powered-by"` | Off by default |
 | Default 404 and error responses | JSON instead of HTML |
 | `app.use(otherApp)`, `mountpath`, `path()`, the `mount` event | Same |
@@ -1293,8 +1297,8 @@ Differences:
   Express continues with the following layer.
 - `res.sendFile()` errors have the standard status text as message; Express
   passes the file system error, whose message includes the file path.
-- A router can't be mounted on a regular expression (it throws); RegExp
-  routes and middleware work.
+- A router can't be mounted on a regular expression or on a path with
+  several params in one segment (it throws); such routes and middleware work.
 - Optional parameters and wildcards use the Express 4 syntax: `/:id?` and
   `/files/*` (`req.params["*"]`), where Express 5 uses `{/:id}` and
   `/*name`. The `*` also matches an empty rest.

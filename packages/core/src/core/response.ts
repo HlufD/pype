@@ -1,7 +1,7 @@
 import { ServerResponse, STATUS_CODES } from "http";
 import { close, createReadStream, fstat, open, realpath, stat, Stats } from "fs";
 import { pipeline } from "stream";
-import { basename, extname, isAbsolute, join, resolve, sep } from "path";
+import { basename, extname, isAbsolute, join, normalize, resolve, sep } from "path";
 import type { Request } from "./request";
 import type { Pype } from "./server";
 import { MIME_TYPES } from "../enums/mime-types";
@@ -13,6 +13,7 @@ import {
   generateETag,
   generateStrongETag,
   isPreconditionFailure,
+  parseMaxAge,
   isRangeFresh,
   lookupMime,
   parseTokenList,
@@ -36,16 +37,23 @@ export interface SendFileOptions {
    * Only applies with `root`.
    */
   followSymlinks?: boolean;
-  /** `Cache-Control` max-age in milliseconds. Default 0. */
-  maxAge?: number;
+  /**
+   * `Cache-Control` max-age in milliseconds, or a duration like `"1d"` or
+   * `"20s"`; kept between 0 and one year, like Express. Default 0.
+   */
+  maxAge?: number | string;
   /** Adds `immutable` to `Cache-Control`. */
   immutable?: boolean;
   /** Set `Cache-Control`. Default `true`. */
   cacheControl?: boolean;
   /** Set `Last-Modified`. Default `true`. */
   lastModified?: boolean;
-  /** Set a weak `ETag`. Default `true`. */
+  /** Set a weak `ETag`. Default: the app's `"etag"` setting, on unless it is turned off. */
   etag?: boolean;
+  /** First byte of the file to send, like Express's `send`. Default 0. */
+  start?: number;
+  /** Last byte of the file to send (inclusive). Default: the end of the file. */
+  end?: number;
   /** Support `Range` requests. Default `true`. */
   acceptRanges?: boolean;
   /**
@@ -566,6 +574,7 @@ export class Response extends ServerResponse<Request> {
     }
 
     if (!path) throw new TypeError("path argument is required to res.sendFile");
+    if (typeof path !== "string") throw new TypeError("path must be a string to res.sendFile");
 
     if (!options.root && !isAbsolute(path)) {
       throw new TypeError(
@@ -574,12 +583,24 @@ export class Response extends ServerResponse<Request> {
     }
 
     const opts = options;
+    let finished = false;
     const done = (error?: HttpError | NodeJS.ErrnoException) => {
-      if (callback) return callback(error);
+      if (finished) return;
+      finished = true;
+
+      // Like Express: a client that went away is an ECONNABORTED error, and
+      // the callback gets file system errors with their HTTP status.
+      if (error && ABORT_CODES.has(error.code as string)) error = abortedError();
+      if (callback) {
+        if (error && !(error instanceof HttpError) && error.code !== "ECONNABORTED") {
+          Object.assign(error, { status: errorStatus(error), statusCode: errorStatus(error) });
+        }
+        return callback(error);
+      }
       if (!error) return;
 
       // The client went away, there is nobody to answer.
-      if (ABORT_CODES.has(error.code as string)) {
+      if (error.code === "ECONNABORTED") {
         if (!this.writableEnded) this.destroy();
         return;
       }
@@ -601,6 +622,9 @@ export class Response extends ServerResponse<Request> {
       if (!this.headersSent) this.sendStatus(httpError.status);
       else if (!this.writableEnded) this.destroy(error);
     };
+
+    // Like Express, nothing is sent to a client that already went away.
+    if (this.destroyed || this.req.destroyed) return done(abortedError());
 
     const resolved = this.resolveFilePath(path, opts);
     if (resolved instanceof HttpError) return done(resolved);
@@ -675,35 +699,42 @@ export class Response extends ServerResponse<Request> {
       return finish();
     }
 
-    let start = 0;
-    let end = Math.max(stats.size - 1, 0);
+    // The part of the file to send: the start and end options, like
+    // Express's send, then a Range inside that part.
+    let start = opts.start ?? 0;
+    let length = Math.max(0, stats.size - start);
+    if (opts.end !== undefined) length = Math.min(length, opts.end - start + 1);
 
     // An outdated If-Range asks for the whole file, not a part of a newer one.
     if (opts.acceptRanges !== false && isRangeFresh(this.req.headers, this.getHeaders())) {
-      const ranges = this.req.range(stats.size, { combine: true });
+      const ranges = this.req.range(length, { combine: true });
 
       if (ranges === -1) {
         // On the error too, like Express's send: error handlers reset the headers.
-        const headers = { "Content-Range": `bytes */${stats.size}` };
+        const headers = { "Content-Range": `bytes */${length}` };
         this.set(headers);
         return finish(Object.assign(new HttpError(416), { headers }));
       }
 
       if (Array.isArray(ranges) && ranges.type === "bytes" && ranges.length === 1) {
-        start = ranges[0].start;
-        end = ranges[0].end;
         this.statusCode = 206;
-        this.set("Content-Range", `bytes ${start}-${end}/${stats.size}`);
+        this.set("Content-Range", `bytes ${ranges[0].start}-${ranges[0].end}/${length}`);
+        start += ranges[0].start;
+        length = ranges[0].end - ranges[0].start + 1;
       }
     }
 
-    const length = stats.size === 0 ? 0 : end - start + 1;
+    const end = start + length - 1;
     this.set("Content-Length", String(length));
 
     if (this.req.method === "HEAD" || length === 0) {
       this.end();
       return finish();
     }
+
+    // The client may have gone away while the file was opened; pipeline()
+    // throws for a destroyed response instead of calling back.
+    if (this.destroyed) return finish(abortedError());
 
     // The stream owns the descriptor from here and closes it.
     pipeline(createReadStream(resolved, { fd, start, end }), this, (streamError) =>
@@ -758,13 +789,15 @@ export class Response extends ServerResponse<Request> {
   private resolveFilePath(path: string, options: SendFileOptions) {
     if (path.includes("\0")) return new HttpError(400);
 
-    const segments = path.split(/[\\/]+/);
-
-    if (options.root && segments.includes("..")) return new HttpError(403);
+    // Like Express's send: with root, the path is normalized first, so
+    // "a/../b" stays inside it while a ".." that still goes up is rejected,
+    // and the result must be inside root too. Without root, any ".." is.
+    const normalized = options.root ? normalize(`.${sep}${path}`) : normalize(path);
+    if (UP_PATH.test(options.root ? normalized : path)) return new HttpError(403);
 
     const resolved = options.root
-      ? join(resolve(options.root), path)
-      : resolve(path);
+      ? join(resolve(options.root), normalized)
+      : resolve(normalized);
 
     if (options.root) {
       const root = resolve(options.root);
@@ -772,7 +805,7 @@ export class Response extends ServerResponse<Request> {
         return new HttpError(403);
     }
 
-    const checked = options.root ? segments : resolved.split(sep);
+    const checked = options.root ? normalized.split(/[\\/]+/) : resolved.split(sep);
     const hasDotfile = checked.some(
       (segment) => segment.length > 1 && segment.startsWith("."),
     );
@@ -795,7 +828,7 @@ export class Response extends ServerResponse<Request> {
     if (options.acceptRanges !== false) this.set("Accept-Ranges", "bytes");
 
     if (options.cacheControl !== false && !this.get("Cache-Control")) {
-      let cacheControl = `public, max-age=${Math.floor((options.maxAge || 0) / 1000)}`;
+      let cacheControl = `public, max-age=${Math.floor(parseMaxAge(options.maxAge ?? 0) / 1000)}`;
       if (options.immutable) cacheControl += ", immutable";
       this.set("Cache-Control", cacheControl);
     }
@@ -804,7 +837,9 @@ export class Response extends ServerResponse<Request> {
       this.set("Last-Modified", stats.mtime.toUTCString());
     }
 
-    if (options.etag !== false && !this.get("ETag")) {
+    // Like Express, the app's "etag" setting turns file ETags off too.
+    const etag = options.etag ?? (this.app ? this.app.enabled("etag") : true);
+    if (etag && !this.get("ETag")) {
       this.set(
         "ETag",
         `W/"${stats.size.toString(16)}-${stats.mtime.getTime().toString(16)}"`,
@@ -816,7 +851,8 @@ export class Response extends ServerResponse<Request> {
       this.set("Content-Type", mime || "application/octet-stream");
     }
 
-    if (options.headers) this.set(options.headers);
+    // Set as they are, like Express's send: no charset is added.
+    for (const [name, value] of Object.entries(options.headers ?? {})) this.setHeader(name, value);
   }
 }
 
@@ -844,7 +880,23 @@ function sendIndex(
 }
 
 /** Error codes of a transfer the client aborted, ignored like Express does. */
-const ABORT_CODES = new Set(["ERR_STREAM_PREMATURE_CLOSE", "ECONNRESET", "ECONNABORTED", "EPIPE"]);
+const ABORT_CODES = new Set([
+  "ERR_STREAM_PREMATURE_CLOSE",
+  "ERR_STREAM_DESTROYED",
+  // Piping into a response whose client just went away.
+  "ERR_STREAM_UNABLE_TO_PIPE",
+  "ECONNRESET",
+  "ECONNABORTED",
+  "EPIPE",
+]);
+
+/** A `..` segment of a normalized path, which goes up from where it starts. */
+const UP_PATH = /(?:^|[\\/])\.\.(?:[\\/]|$)/;
+
+/** What `sendFile` reports when the client went away, like Express. */
+function abortedError() {
+  return Object.assign(new Error("Request aborted"), { code: "ECONNABORTED" });
+}
 
 /** The MIME type of a `res.format()` key, without parameters. */
 function mimeOfFormat(key: string): string {

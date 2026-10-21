@@ -693,6 +693,32 @@ function generateStrongETag(
   return `"${length.toString(16)}-${hash}"`;
 }
 
+/** Units of the `ms` package's durations, in milliseconds. */
+const DURATION_UNITS: Record<string, number> = { y: 31557600000, w: 604800000, d: 86400000, h: 3600000, m: 60000, s: 1000, ms: 1 };
+
+/** A duration like `"2 days"` or `"1.5h"`, the syntax of the `ms` package. */
+const DURATION = /^(-?(?:\d+)?\.?\d+) *(milliseconds?|msecs?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)?$/i;
+
+/**
+ * A `maxAge` option in milliseconds, like Express's `send`: a number or an
+ * `ms` duration such as `"1d"` or `"20s"`, kept between 0 and one year;
+ * 0 when it's neither.
+ */
+function parseMaxAge(value: unknown): number {
+  let ms = Number(value);
+  if (typeof value === "string") {
+    const match = value.length <= 100 ? DURATION.exec(value) : null;
+    ms = NaN;
+    if (match) {
+      const unit = (match[2] ?? "ms").toLowerCase();
+      const key = unit.startsWith("ms") || unit.startsWith("msec") || unit.startsWith("milli") ? "ms" : unit[0];
+      ms = parseFloat(match[1]) * DURATION_UNITS[key];
+    }
+  }
+  // send caps it at 365 days; ms's year above is 365.25 days.
+  return Number.isNaN(ms) ? 0 : Math.min(Math.max(0, ms), 365 * DURATION_UNITS.d);
+}
+
 /** Characters the `encodeurl` package encodes: those not allowed in a URL, and `%` that doesn't start an escape. */
 const URL_ENCODE_CHARS = /(?:[^\x21\x23-\x3B\x3D\x3F-\x5F\x61-\x7A\x7C\x7E]|%(?:[^0-9A-Fa-f]|[0-9A-Fa-f][^0-9A-Fa-f]|$))+/g;
 
@@ -764,6 +790,7 @@ export {
   isRangeFresh,
   generateETag,
   generateStrongETag,
+  parseMaxAge,
   encodeUrl,
   escapeHtml,
   contentDisposition,

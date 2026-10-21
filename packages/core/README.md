@@ -918,9 +918,13 @@ res.sendFile("/srv/reports/q3.pdf", (err) => {
 ```
 
 - Without `root`, `path` must be absolute, otherwise a `TypeError` is thrown.
-- With `root`, `path` is resolved inside it. Paths containing `..` or
-  resolving outside `root` get 403, and paths with a null byte get 400.
-  Always use `root` for paths that come from the request.
+- With `root`, `path` is resolved inside it. Like Express, it is normalized
+  first, so `docs/../a.txt` is `a.txt`; a `..` that still goes up, or a
+  path resolving outside `root`, gets 403, and a null byte 400. Always use
+  `root` for paths that come from the request.
+- With a callback, it gets file system errors with their `status` (404 for
+  a missing file), and an `ECONNABORTED` error when the client went away;
+  without one, a client that went away is ignored.
 - Symlinks are followed, like Express, so a symlink inside `root` can serve
   files from outside it. If users can create files under `root` (an uploads
   folder, for example), set `followSymlinks: false`: the real path, with
@@ -949,16 +953,17 @@ res.sendFile("/srv/reports/q3.pdf", (err) => {
 | Option         | Default    | Description |
 | -------------- | ---------- | ----------- |
 | `root`         |            | Directory relative paths are resolved against. |
-| `maxAge`       | `0`        | `Cache-Control` max-age, in milliseconds. |
+| `maxAge`       | `0`        | `Cache-Control` max-age, in milliseconds or as a duration like `"1d"` or `"20s"`; between 0 and one year. |
 | `immutable`    | `false`    | Adds `immutable` to `Cache-Control`. |
 | `cacheControl` | `true`     | Set `Cache-Control`. |
 | `lastModified` | `true`     | Set `Last-Modified`. |
-| `etag`         | `true`     | Set `ETag`. |
+| `etag`         | the `"etag"` setting | Set `ETag`; `app.disable("etag")` turns it off for files too. |
 | `acceptRanges` | `true`     | Support `Range` requests. |
 | `dotfiles`     | `"ignore"` | Files and folders starting with a dot: `"ignore"` (404), `"deny"` (403) or `"allow"`. |
 | `index`        | `"index.html"` | Files tried, in order, for a path ending in `/`; `false` turns it off. A path ending in `/` never matches a plain file. |
 | `followSymlinks` | `true`   | With `root`: `false` rejects (403) symlinks whose target is outside `root`. |
-| `headers`      |            | Extra response headers. |
+| `headers`      |            | Extra response headers, set as they are (no charset is added). |
+| `start`, `end` |            | Send only these bytes of the file (`end` inclusive), with a 200; a `Range` applies within them. |
 
 #### `res.download(path, [filename], [options], [callback])`
 

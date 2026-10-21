@@ -1101,6 +1101,79 @@ describe("files match Express", () => {
   });
 });
 
+describe("res.sendFile() options match Express", () => {
+  let pair: Pair;
+
+  beforeAll(async () => {
+    writeFileSync(join(root, "nums.txt"), "123456789");
+    pair = await startPair((app) => {
+      app.get("/opts", (req: any, res: any) => {
+        const options = JSON.parse(String(req.query.o ?? "{}"));
+        res.sendFile(String(req.query.f ?? "nums.txt"), { root: decodeURIComponent(root), ...options });
+      });
+      app.get("/callback", (req: any, res: any) =>
+        res.sendFile(String(req.query.f), { root: decodeURIComponent(root) }, (err: any) =>
+          res.headersSent ? undefined : res.json({ status: err?.status ?? null, statusCode: err?.statusCode ?? null, code: err?.code ?? null }),
+        ),
+      );
+      app.use((err: any, _req: any, res: any, _next: any) => res.status(err.status ?? 500).json({ status: err.status }));
+    });
+  });
+
+  afterAll(() => Promise.all([pair.express.close(), pair.pype.close()]));
+
+  it.each<[string, Record<string, unknown>]>([
+    ["maxAge number", { maxAge: 14400000 }],
+    ["maxAge \"4h\"", { maxAge: "4h" }],
+    ["maxAge \"20s\"", { maxAge: "20s" }],
+    ["maxAge \"1.5 days\"", { maxAge: "1.5 days" }],
+    ["maxAge over a year", { maxAge: 99999999999 }],
+    ["maxAge below 0", { maxAge: -20000 }],
+    ["maxAge garbage", { maxAge: "soon" }],
+    ["headers", { headers: { "Content-Type": "text/x-custom", "X-Extra": "1" } }],
+    ["start and end", { start: 2, end: 5 }],
+    ["start only", { start: 7 }],
+    ["end past the file", { start: 0, end: 99 }],
+  ])("%s", async (_name, options) => {
+    const path = `/opts?o=${encodeURIComponent(JSON.stringify(options))}`;
+    await same(path, {}, pair);
+    await same(path, { headers: { Range: "bytes=1-2" } }, pair);
+  });
+
+  it.each(["sub/../nums.txt", "../nums.txt", "a/b/../../nums.txt", "x/.hidden/../nums.txt", "nums.txt/../.."])("path %s", (file) =>
+    same(`/opts?f=${encodeURIComponent(file)}`, {}, pair),
+  );
+
+  it.each(["nums.txt", "/../nums.txt", "/x/../nums.txt"])("an absolute path without root: %s", async (file) => {
+    const pair2 = await startPair((app) => {
+      app.get("/", (_req: any, res: any) => res.sendFile(`${decodeURIComponent(root)}/${file.replace(/^\//, "")}`));
+      app.use((err: any, _req: any, res: any, _next: any) => res.status(err.status ?? 500).json({ status: err.status }));
+    });
+    try {
+      await same("/", {}, pair2);
+    } finally {
+      await Promise.all([pair2.express.close(), pair2.pype.close()]);
+    }
+  });
+
+  it.each(["nums.txt", "missing.txt", "../nums.txt"])("the callback gets the status for %s", (file) =>
+    same(`/callback?f=${encodeURIComponent(file)}`, {}, pair),
+  );
+
+  it("app.disable(\"etag\") turns file ETags off", async () => {
+    const pair2 = await startPair((app) => {
+      app.disable("etag");
+      app.get("/", (_req: any, res: any) => res.sendFile(join(decodeURIComponent(root), "nums.txt")));
+    });
+    try {
+      await same("/", {}, pair2);
+      expect((await pair2.pype.send("/")).headers.etag).toBeUndefined();
+    } finally {
+      await Promise.all([pair2.express.close(), pair2.pype.close()]);
+    }
+  });
+});
+
 describe("body parser edge cases match Express", () => {
   const post = (path: string, body: string | Buffer, headers: Record<string, string>) =>
     same(path, { method: "POST", body, headers });

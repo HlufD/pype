@@ -35,6 +35,7 @@ The framework lives in `packages/core` of this monorepo, published to npm as
 - [Testing](#testing)
 - [Extending Pype](#extending-pype)
 - [Known limitations](#known-limitations)
+- [Background](#background)
 
 ## Goals
 
@@ -73,13 +74,13 @@ src/
 
 | File | Lines | Responsibility |
 | ---- | ----- | -------------- |
-| `core/server.ts` | ~600 | Application API, compiling routes, running the pipeline, final error handling |
-| `core/response.ts` | ~650 | Everything that writes a response: `send`, `json`, `sendFile`, cookies, redirects |
-| `utils/helpers.ts` | ~500 | Pure functions shared by request and response |
-| `utils/Trie-Route.ts` | ~480 | Path matching |
-| `core/request.ts` | ~350 | Request properties and content negotiation |
-| `core/router.ts` | ~340 | Collecting middleware and routes in registration order |
-| `middlewares/body-parser.ts` | ~190 | Reading and parsing request bodies |
+| `core/server.ts` | ~1180 | Application API, compiling routes, running the pipeline, params, final error handling |
+| `core/response.ts` | ~840 | Everything that writes a response: `send`, `json`, `sendFile`, cookies, redirects |
+| `utils/helpers.ts` | ~760 | Pure functions shared by request and response |
+| `utils/Trie-Route.ts` | ~520 | Path matching |
+| `core/router.ts` | ~500 | Collecting middleware and routes in registration order |
+| `middlewares/body-parser.ts` | ~470 | Reading and parsing request bodies |
+| `core/request.ts` | ~330 | Request properties and content negotiation |
 | `utils/trust-proxy.ts` | ~85 | Deciding which proxy headers to believe |
 
 ## Component overview
@@ -215,7 +216,10 @@ sequenceDiagram
 
 The route is looked up **once**, before the pipeline starts. While walking the
 layers, a route layer runs only if it is one of the layers the tree matched.
-Middleware layers are checked by a cheap prefix comparison.
+Middleware layers are checked by a prefix comparison, segment by segment when
+the mount path has `:params`. When the path contains a `%`, the tree is also
+asked which routes match for *other* methods but fail to decode, so those
+answer 400 like in Express.
 
 ## Components
 
@@ -232,6 +236,7 @@ Middleware layers are checked by a cheap prefix comparison.
 | `router` | The root `PypeRouter`. |
 | `layers`, `routes`, `routeLayers` | The compiled table, rebuilt by `compile()`. |
 | `compiledVersion` | The `routingVersion()` the table was built from. |
+| `caseSensitive` | The `"case sensitive routing"` setting the table was built with; changing the setting rebuilds it. |
 
 #### `prepare(req, res)`
 
@@ -291,18 +296,27 @@ When no layer is left, `finalHandler()` responds.
 Both implement Express's **relative paths**: before calling a middleware
 mounted on `/admin`, `mount()` strips `/admin` from `req.url` and `req.path`
 and appends it to `req.baseUrl`. The original values are restored when the
-middleware calls `next()`.
+middleware calls `next()`. For a mount path with params, `/orgs/:org`, the
+matched text of the request is stripped, so `req.baseUrl` is `/orgs/acme`.
 
-Middleware gets `req.params` from its RegExp mount path, or `{}`.
+Both set `req.params` through `enterParams()`, which follows Express's nested
+routers level by level, using the `mounts` a layer was compiled with:
 
-`runRoute()` additionally:
+1. For each router above the layer, `req.params` becomes the params of the
+   path the next router down is mounted on, merged into the previous level's
+   when that router has `mergeParams`. Each level reads its own segments of
+   the request, so a name used at two levels keeps both values.
+2. The router's `param()` callbacks run for those params
+   (`processParams()`, Express's algorithm: once per request and value per
+   router, errors and `next("route")` handled like Express). That is how
+   `app.param("org")` runs for `app.use("/orgs/:org", router)`.
+3. Finally `req.params` becomes the layer's own params (its `:params` or
+   RegExp groups), merged when its router has `mergeParams`, and its router's
+   callbacks run for them.
 
-- sets `req.params` and `req.route`;
-- runs the `param()` callbacks of the route's router for its parameters
-  (`processParams()`, Express's algorithm: once per request and value per
-  router, errors and `next("route")` handled like Express);
-- runs the route's own handlers in order with its own inner `next`; a
-  four-parameter handler only gets errors raised inside the route.
+`runRoute()` additionally sets `req.route` and runs the route's own handlers
+in order with its own inner `next`; a four-parameter handler only gets errors
+raised inside the route.
 
 #### `invoke()`: catching errors
 
@@ -321,7 +335,9 @@ try {
 
 Synchronous throws and rejected promises both become `next(err)`, like
 Express 5. Each `next` passed to a handler is wrapped in `once()`, so a second
-call only logs a warning instead of running the rest of the pipeline twice.
+call only logs a warning instead of running the rest of the pipeline twice,
+as Express does. When that second call passes an error, the warning includes
+it, so it isn't lost.
 
 #### `finalHandler()`
 
@@ -355,18 +371,26 @@ type StackEntry =
   push a `route` entry.
 - `route(path)` returns a `RouteBuilder`, a thin object whose methods call
   the router's methods with the stored path.
+- `new PypeRouter({ mergeParams: true })` sets `mergeParams`, read by
+  `enterParams()`.
 
-`compile(basePath, routers)` produces the layers:
+`compile(basePath, routers, mounts)` produces the layers:
 
 ```ts
-interface MiddlewareLayer { kind: "middleware"; path; pattern?; handle; routers; group? }
+interface MiddlewareLayer {
+  kind: "middleware";
+  path; pattern?; handle; routers; group?;
+  keys;       // param names of its own mount path
+  mounts;     // MountScope[]: each router above it, with its mount path's param names
+}
 interface RouteLayer {
   kind: "route";
   fullPath;   // used for matching, e.g. "/admin/stats"; the router's mount for a RegExp
   routePath;  // as written, e.g. "/stats", a RegExp or an array, exposed as req.route.path
-  pattern?;   // a RegExp path
+  pattern?;   // a RegExp path, used without its g and y flags so lastIndex can't leak between requests
   baseUrl;    // mount path, e.g. "/admin", exposed as req.baseUrl
-  keys;       // param names, for param() callbacks
+  keys;       // param names of the route's own path, for param() callbacks
+  mounts;     // as for middleware
   methods; handlers; routers; group?;
 }
 interface RouterEndLayer { kind: "end"; router; routers }
@@ -467,6 +491,12 @@ Exact static paths skip the tree completely through `staticRoutes`. This is
 correct because an exact static match always wins under the precedence
 rules.
 
+With `caseSensitive: false` (the `"case sensitive routing"` setting turned
+off), static text is stored lowercased and the request path is compared
+lowercased, while param values are cut from the original path, so they keep
+their case. Only ASCII letters are folded (`lowerAscii()`), so both strings
+have the same length and positions line up.
+
 #### Building params
 
 `compileParamsBuilder()` generates one function per route with
@@ -482,7 +512,7 @@ JSON-escaped, so request data never reaches generated code. `decode()` only
 calls `decodeURIComponent` when the value contains `%`. A malformed escape
 throws a 400 `URIError`; `match()` catches it and returns it as
 `MatchResult.error` with empty params, and `Pype.handle()` then skips the
-route layers and passes the error on, like Express.
+route layers and passes the error on, like Express, for every method.
 
 ### Request
 
@@ -549,16 +579,24 @@ to a `Buffer` first.
 
 1. `resolveFilePath()` rejects null bytes (400), `..` segments and paths that
    resolve outside `root` (403), and applies the dotfile policy.
-2. `fs.stat` the file. Missing files become 404, directories an `EISDIR`
-   error. With `followSymlinks: false`, `checkRealPath()` first resolves the
-   real paths of the file and the root and answers 403 if the file is outside.
+2. `transferFile()` **opens the file first** and works from that descriptor
+   only (`fstat`, then the read stream), so the file that was checked is the
+   file that is sent. Missing files become 404, directories an `EISDIR`
+   error. With `followSymlinks: false`, `checkRealPath()` then resolves the
+   real paths of the file and the root, answers 403 if the file is outside,
+   and checks that the real path inside the root is the opened file (same
+   device and inode). A path swapped for a symlink during the request
+   therefore gets a 403, never the other file.
 3. `setFileHeaders()` sets `Content-Type`, `Accept-Ranges`, `Cache-Control`,
    `Last-Modified` and a weak `ETag` built from size and modification time.
-4. Fresh conditional requests get 304. A single satisfiable `Range` gets 206
-   with `Content-Range`; an unsatisfiable one 416.
-5. The file is streamed with `stream.pipeline(createReadStream(...), res)`,
+4. A failing `If-Match` or `If-Unmodified-Since` gets 412 and fresh
+   conditional requests 304. A single satisfiable `Range` gets 206 with
+   `Content-Range`, unless an `If-Range` no longer matches, which sends the
+   whole file; an unsatisfiable range gets 416 with `Content-Range: bytes */<size>`.
+5. The file is streamed with `stream.pipeline(createReadStream(..., { fd }), res)`,
    which closes the file when the client disconnects. A plain `pipe()` would
-   leak a file descriptor per aborted download.
+   leak a file descriptor per aborted download. Every early return (304, 412,
+   416, HEAD, empty files) closes the descriptor itself.
 6. Errors go to the callback when one is given. Otherwise, like Express, a
    client that disconnected is ignored, a directory calls `next()`, and any
    other error is passed to `next(err)` as an `HttpError` with the status and
@@ -647,8 +685,9 @@ client first.
 | `mediaTypeOf()`, `matchContentType()`, `lookupMime()` | `req.is`, body parsers | `type-is` rules: valid media types, extensions, `*/*`, `+suffix`, `urlencoded`, `multipart` |
 | `normalizeType()`, `contentType()`, `setCharset()` | `res.type`, `res.set`, `res.send` | `Content-Type` values with the charsets Express adds |
 | `parseTokenList()` | `isFresh()`, `res.vary` | Comma-separated header lists |
-| `parseRange()` | `req.range`, `sendFile` | Parses `Range`, optionally merging ranges |
+| `parseRange()` | `req.range`, `sendFile` | Parses `Range`, optionally merging ranges in the order they were asked for, like `range-parser` |
 | `isFresh()` | `req.fresh` | `If-None-Match` / `If-Modified-Since` rules of the `fresh` package |
+| `isPreconditionFailure()`, `isRangeFresh()` | `sendFile` | `If-Match` / `If-Unmodified-Since` and `If-Range` rules of Express's `send` |
 | `generateETag()` | `res.send` | Weak ETag `W/"<size>-<sha1>"`, like Express |
 | `serializeCookie()`, `signCookie()` | `res.cookie` | Validated `Set-Cookie` values and signatures |
 | `encodeUrl()`, `escapeHtml()` | `res.location`, `res.redirect` | Safe URLs and HTML |
@@ -735,7 +774,7 @@ tests where it matters, for example cookie signatures against
 | Header injection through cookies | Names, values, domain and path are validated; `sameSite` and `priority` must be known values | `serializeCookie()` |
 | Path traversal in `sendFile` | `..` segments and paths outside `root` give 403, null bytes 400 | `resolveFilePath()` |
 | Hidden files leaking | Dotfiles ignored (404) by default | `resolveFilePath()` |
-| Symlinks leading out of `root` | Opt-in with `followSymlinks: false`: the real path must stay inside the real root, 403 otherwise. Checked before opening, so not race-free against a writable root. Followed by default, like Express | `checkRealPath()` |
+| Symlinks leading out of `root` | Opt-in with `followSymlinks: false`: the real path must stay inside the real root and be the file that was opened, 403 otherwise, so swapping in a symlink during the request doesn't work. Hard links aren't detected. Followed by default, like Express | `transferFile()`, `checkRealPath()` |
 | Large or slow bodies | Size limit checked on `Content-Length` and while reading; a `NaN` limit throws instead of disabling it | `readBody()` |
 | File descriptor exhaustion | Files closed when clients disconnect | `sendFile()` with `stream.pipeline` |
 | Spoofed client IPs | `X-Forwarded-*` only read from trusted proxies, off by default | `trust-proxy.ts` |
@@ -788,7 +827,7 @@ times a lookup that has to backtrack through overlapping branches.
 
 Coverage thresholds (95% statements, functions and lines, 90% branches) are
 enforced by `vitest.config.ts`. CI runs type checks, tests and a package
-build on Linux and macOS with Node 22, 24 and 26; a nightly workflow runs
+build on Linux, macOS and Windows with Node 22, 24 and 26; a nightly workflow runs
 `npm run test:fuzz`, 20,000 runs per property.
 
 ## Extending Pype
@@ -818,9 +857,51 @@ before and after.
 
 - Route patterns are the Express 4 style (`:id?`, `*`), not Express 5's
   `{/:id}` and `/*splat`.
-- Routing is always case-sensitive; there is no `"case sensitive routing"` or
-  `"strict routing"` setting.
-- No several params in one segment, params in `use()` string mount paths,
-  routers mounted on a RegExp, or mounting another app with
-  `app.use(otherApp)`.
+- Routing is case-sensitive by default, unlike Express; `"case sensitive
+  routing": false` covers every router, there is no per-router
+  `caseSensitive` option. There is no `"strict routing"` setting.
+- No several params in one segment, routers mounted on a RegExp, or mounting
+  another app with `app.use(otherApp)`.
 - No `res.jsonp` or `req.param()`.
+
+## Background
+
+### Why Pype exists
+
+Pype started as a learning project. After several years of building Node.js
+backends with Express and NestJS, the goal was to understand what these tools
+do behind the scenes, because treating a framework as a black box makes
+middleware problems and performance bottlenecks much harder to debug. Building
+one from the raw `http` module up makes `next()`, middleware chains, route
+matching and the request lifecycle explicit.
+
+### From the first plan to the current design
+
+The first design, written before any code, aimed for readability over
+performance and listed production readiness and replacing Express as
+non-goals. The project then grew into an Express 5 compatible framework, and
+several ideas changed on the way:
+
+| First plan | What was built |
+| ---------- | -------------- |
+| Wrapper objects with `req.raw` and `res.raw` | Subclasses of `IncomingMessage` and `ServerResponse`, see [Prototypes instead of decorating each request](#prototypes-instead-of-decorating-each-request) |
+| A `req.context` store | `res.locals`, like Express |
+| Interceptors around handlers (`await next()`) | Left out: Express middleware semantics instead |
+| `*` for one segment, `**` for many | Express 4 style `:id?` and a trailing `*` |
+| First matching route wins | The most specific route wins, see [Design decisions](#design-decisions) |
+| `PipeServer` and `PipeRouter`, routes registered into the tree when a router is mounted | `Pype` and `PypeRouter`, routers compiled into layers and a tree, see [Compilation](#2-compilation) |
+| Guard against multiple `next()` calls | Kept: a second call is ignored with a warning |
+| Configurable case sensitivity | The `"case sensitive routing"` setting |
+
+The checklist of Express request and response methods from that time is now
+covered by the [package README](../packages/core/README.md), which documents
+every method; only `res.jsonp()` and `req.param()` were left out.
+
+### Planned write-ups
+
+The project was also meant to be documented as a blog series, from Node's
+HTTP layer (`http.createServer`, `IncomingMessage`, `ServerResponse`, streams,
+the request lifecycle) through router design and its data structures,
+benchmarks, wrapping the request and response, Express compatibility, the
+middleware engine and error handling, to design patterns, mistakes made and
+lessons learned. This document covers the technical parts of that plan.

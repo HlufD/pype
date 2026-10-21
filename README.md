@@ -22,9 +22,8 @@ packages/
   core/               pyper-web: src/, tests/, bench/
   di/                 pyper-di: empty placeholder
 docs/
-  ARCHITECTURE.md     how the framework is built
+  ARCHITECTURE.md     how the framework is built, and why
   SECURITY.md         reporting vulnerabilities
-  ...                 design notes
 tsconfig.base.json    compiler options shared by all packages
 package.json          npm workspaces root (private)
 ```

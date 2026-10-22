@@ -1,6 +1,6 @@
 {
   "name": "pyper-web",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "description": "Express 5 compatible web framework for Node.js with a radix tree router",
   "keywords": [
     "http",
